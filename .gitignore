@@ -1,0 +1,15 @@
+.env
+*.secret
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.p8
+*.db
+*.sqlite*
+state.json
+install-result.env
+*.log
+__pycache__/
+.pytest_cache/

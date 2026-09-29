@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/main/bootstrap.sh 
 
 ## What it installs
 
-官方 3x-ui **v3.8.5**，含官方构建捆绑的 Xray-core **v26.9.9**。版本核对日期：2026-09-29。固定安装器来自 [3x-ui v3.8.5 commit](https://github.com/MHSanaei/3x-ui/tree/v3.8.5)；安装器从同版 release 获取资产并核对官方 SHA-256。自动创建 inbound 使用 [官方 API](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/docs/public/openapi.json)。Xray 不单独安装或升级。
+官方 3x-ui **v3.8.5**，含其[官方构建](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/.github/workflows/release.yml)捆绑的 Xray-core **v26.9.9**。版本核对日期：2026-09-29。固定安装器来自 [3x-ui v3.8.5 commit](https://github.com/MHSanaei/3x-ui/tree/v3.8.5)；安装器从同版 release 获取资产并核对官方 SHA-256。自动创建 inbound 使用 [官方 API](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/docs/public/openapi.json)。Xray 不单独安装或升级。[Xray 官方将 v26.9.9 标为 Pre-release](https://github.com/XTLS/Xray-core/releases/tag/v26.9.9)，须以真实 VPS 演练确认兼容性。
 
 VMess profile: TCP :443、alterId 0、AEAD、`security=auto`、TCP header `none`、TLS off。客户端 UDP 开关保持 on；流量通过 VMess TCP 传输。这个裸 TCP/无 TLS 组合沿用现有客户端设置，流量缺少 TLS 保护，V1 仅为兼容性灾备。
 

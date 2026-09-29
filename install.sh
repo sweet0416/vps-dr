@@ -5,56 +5,53 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$here/config/defaults.env"
 trap 'echo "ERROR: install failed at line $LINENO. DNS was not changed. Review root-only /var/log/vps-dr-install.log if upstream installation failed." >&2' ERR
 
-(( EUID == 0 )) || { echo "Run as root (sudo bash install.sh)." >&2; exit 1; }
-source /etc/os-release
-case "$ID:$VERSION_ID" in
-  ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ;;
-  *) echo "Unsupported OS: $PRETTY_NAME (Ubuntu 22.04/24.04/26.04 or Debian 12/13 required)." >&2; exit 1 ;;
-esac
-case "$(uname -m)" in
-  x86_64|aarch64) ;;
-  *) echo "Unsupported architecture: $(uname -m) (amd64/arm64 required)." >&2; exit 1 ;;
-esac
-command -v systemctl >/dev/null || { echo "systemd is required." >&2; exit 1; }
-
-if [[ "${DRY_RUN:-0}" == 1 || "${1:-}" == --dry-run ]]; then
-  echo "DRY_RUN: OS=$PRETTY_NAME ARCH=$(uname -m) 3X_UI=$VERSION_3XUI XRAY_BUNDLED=$VERSION_XRAY"
-  echo "Would install dependencies, enable UFW after SSH allow, install pinned 3x-ui, bind panel to localhost, create VMess TCP :443, and check health."
-  echo "No installation, firewall, DNS, or production VPS changes made."
-  exit 0
+if [[ "${1:-}" == --preflight || "${1:-}" == --dry-run || "${DRY_RUN:-0}" == 1 ]]; then
+  if bash "$here/preflight.sh"; then exit 0; else exit 1; fi
 fi
+bash "$here/preflight.sh" || { echo "PREFLIGHT_BLOCKED: no system changes made." >&2; exit 1; }
+[[ "$VERSION_XRAY" == "$XRAY_BUNDLED" && "$XRAY_STABLE_COMPATIBLE" == YES ]] || {
+  echo "PRERELEASE_DEPENDENCY_BLOCKED: 3x-ui $VERSION_3XUI bundles $XRAY_BUNDLED; stable target $VERSION_XRAY is not supported by its core manager." >&2
+  exit 1
+}
 
+(( EUID == 0 )) || { echo "Run as root (sudo bash install.sh)." >&2; exit 1; }
+
+if [[ -e /opt/vps-dr ]]; then
+  [[ -d /opt/vps-dr && -f /opt/vps-dr/VERSION && -f /opt/vps-dr/install.sh && -f /opt/vps-dr/scripts/dr.py ]] || {
+    echo "CONFIG_CONFLICT: incomplete /opt/vps-dr; inspect before retry." >&2; exit 1;
+  }
+  for file in VERSION install.sh scripts/dr.py config/defaults.env; do
+    cmp -s "$here/$file" "/opt/vps-dr/$file" || { echo "CONFIG_CONFLICT: deployed $file differs; no overwrite." >&2; exit 1; }
+  done
+fi
 if [[ ! -f "$STATE_DIR/state.json" ]] && { [[ -e /usr/local/x-ui ]] || [[ -e /etc/x-ui ]] || [[ -e /etc/systemd/system/x-ui.service ]] || [[ -e /opt/vps-dr ]]; }; then
   echo "CONFIG_CONFLICT: existing 3x-ui files are not owned by this project." >&2; exit 1
 fi
 
-if [[ ! -f "$STATE_DIR/state.json" ]]; then
+if [[ -e "$STATE_DIR/state.json" ]]; then
+  python3 "$here/scripts/dr.py" check-state "$STATE_DIR/state.json" "$VERSION_3XUI" "$VERSION_XRAY" "$(<"$here/VERSION")" "${VMESS_UUID:-}"
+  VMESS_UUID=$(python3 "$here/scripts/dr.py" state-uuid "$STATE_DIR/state.json")
+else
+  if [[ -z "${VMESS_UUID:-}" && -t 2 ]]; then
+    read -r -p 'Existing VMess UUID (required): ' VMESS_UUID </dev/tty
+  fi
+  [[ -n "${VMESS_UUID:-}" ]] || { echo "VMESS_UUID required; it will never be regenerated automatically." >&2; exit 1; }
+fi
+if [[ ! -x /usr/local/x-ui/x-ui ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends ca-certificates curl python3 iproute2 ufw tar openssl
 fi
-if [[ ! -x /usr/local/x-ui/x-ui ]] && ss -ltn '( sport = :443 )' | grep -q ':443'; then
-  echo "CONFIG_CONFLICT: TCP 443 already has a listener." >&2; exit 1
-fi
-if [[ -e "$STATE_DIR/state.json" ]]; then
-  python3 "$here/scripts/dr.py" check-state "$STATE_DIR/state.json" "$VERSION_3XUI" "${VMESS_UUID:-}"
-  VMESS_UUID=$(python3 "$here/scripts/dr.py" state-uuid "$STATE_DIR/state.json")
-else
-  if [[ -z "${VMESS_UUID:-}" && -t 2 ]]; then
-    read -r -p 'Existing VMess UUID (blank to generate a NEW UUID): ' VMESS_UUID </dev/tty
-  fi
-  if [[ -z "${VMESS_UUID:-}" ]]; then
-    [[ "${ALLOW_NEW_UUID:-0}" == 1 || -t 2 ]] || {
-      echo "VMESS_UUID required for unattended recovery. Set ALLOW_NEW_UUID=1 only if clients can be updated." >&2; exit 1;
-    }
-    VMESS_UUID=$(python3 -c 'import uuid; print(uuid.uuid4())')
-    echo 'NEW UUID GENERATED — CLIENT CONFIGURATION MUST BE UPDATED' >&2
-  fi
-  python3 "$here/scripts/dr.py" init-state "$STATE_DIR/state.json" "$VERSION_3XUI" "$VMESS_UUID"
+if [[ ! -e "$STATE_DIR/state.json" ]]; then
+  python3 "$here/scripts/dr.py" init-state "$STATE_DIR/state.json" "$VERSION_3XUI" "$VERSION_XRAY" "$(<"$here/VERSION")" "$VMESS_UUID"
 fi
 export VMESS_UUID
 
+fresh_install=NO
 if [[ ! -x /usr/local/x-ui/x-ui ]]; then
+  fresh_install=YES
+  panel_port=$(shuf -i 20000-59999 -n 1)
+  [[ -z "$(ss -ltnH "( sport = :$panel_port )")" ]] || { echo "PANEL_PORT_CONFLICT: selected port is occupied; retry." >&2; exit 1; }
   # Protect the current SSH session before enabling the firewall.
   ufw allow 22/tcp
   if [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -69,7 +66,6 @@ if [[ ! -x /usr/local/x-ui/x-ui ]]; then
   ufw allow 443/tcp
   ufw default deny incoming
   ufw --force enable
-  panel_port=$(shuf -i 20000-59999 -n 1)
   log=/var/log/vps-dr-install.log
   install -m 600 /dev/null "$log"
   installer=$(mktemp)
@@ -91,6 +87,7 @@ source "$result"
   echo "Invalid upstream installation result." >&2; exit 1;
 }
 if ! /usr/local/x-ui/x-ui setting -getListen true | grep -q 'listenIP: 127.0.0.1'; then
+  [[ "$fresh_install" == YES ]] || { echo "CONFIG_CONFLICT: existing panel is not localhost-only; refusing to overwrite." >&2; exit 1; }
   /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 >/dev/null
   systemctl restart x-ui
 fi
@@ -104,6 +101,8 @@ if [[ ! -e /opt/vps-dr ]]; then
   install -m 755 "$here/"*.sh /opt/vps-dr/
   install -m 755 "$here/scripts/dr.py" /opt/vps-dr/scripts/
   install -m 644 "$here/config/defaults.env" /opt/vps-dr/config/
+  install -m 644 "$here/VERSION" /opt/vps-dr/
+  install -m 755 "$here/preflight.sh" /opt/vps-dr/
   install -m 644 "$here/README.md" /opt/vps-dr/
   install -m 644 "$here/docs/"*.md /opt/vps-dr/docs/
 fi

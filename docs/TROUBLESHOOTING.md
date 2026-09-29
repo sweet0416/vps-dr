@@ -1,6 +1,10 @@
 # 排查
 
-**CONFIG_CONFLICT**：机器上已有未归本项目管理的 3x-ui、443 占用、已有 inbound 配置不匹配，或重跑时 UUID/版本改变。不要强行覆盖；优先用另一台干净 VPS。
+**XRAY_STABLE_COMPATIBILITY_BLOCKED**：3x-ui v3.8.5 捆绑预发布核心，当前稳定 Xray 不在其允许更新列表。当前停止安装；先完成稳定组合审计，不得强行替换二进制。
+
+**PORT_443_CONFLICT / PANEL_PORT_CONFLICT**：端口被未知程序使用。查看预检报告，人工辨认进程；脚本不会自动结束它。
+
+**CONFIG_CONFLICT / PARTIAL_INSTALL_REQUIRES_REVIEW**：机器上已有未归本项目管理的 3x-ui、已有 inbound 配置不匹配、上游安装残留，或重跑时 UUID/版本改变。不要强行覆盖；优先用另一台干净 VPS。
 
 **安装器失败**：在**新 VPS** 查看 `sudo less /var/log/vps-dr-install.log`。该日志可能含面板密码，不要公开上传。
 

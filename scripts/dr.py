@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """3x-ui v3.8.5 API and local verification for the private DR node."""
 import base64
+import binascii
 import json
 import os
 import platform
@@ -36,7 +37,10 @@ def state(path):
         die("CONFIG_CONFLICT: state missing or readable by non-root users")
     try:
         data = json.loads(p.read_text())
-        if not valid_uuid(data["uuid"]) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", data["version"]):
+        if (not valid_uuid(data["uuid"])
+                or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", data["version"])
+                or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", data["xray_version"])
+                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?", data["deployment_version"])):
             raise ValueError("invalid state fields")
         return data
     except (OSError, ValueError, KeyError, TypeError):
@@ -55,6 +59,7 @@ def write_state(path, value):
 def profile(uid):
     return {
         "enable": True, "remark": "DR-VMESS", "listen": "0.0.0.0",
+        "shareAddrStrategy": "custom", "shareAddr": DOMAIN,
         "port": 443, "protocol": "vmess", "expiryTime": 0, "total": 0,
         "settings": {"clients": [{"id": uid, "alterId": 0, "security": "auto", "email": "dr-vmess@local", "enable": True}]},
         "streamSettings": {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "none"}}},
@@ -75,6 +80,7 @@ def matches(inbound, uid):
             inbound["protocol"] == "vmess" and inbound["port"] == 443
             and inbound.get("listen", "") in ("", "0.0.0.0")
             and inbound.get("enable") is True and inbound.get("remark") == "DR-VMESS"
+            and inbound.get("shareAddrStrategy") == "custom" and inbound.get("shareAddr") == DOMAIN
             and inbound.get("total", 0) == 0 and inbound.get("expiryTime", 0) == 0
             and stream["network"] == "tcp" and stream.get("security", "none") == "none"
             and stream.get("tcpSettings", {}).get("header", {}).get("type", "none") == "none"
@@ -191,7 +197,7 @@ def verify(path):
         time.sleep(1)
     if xray.get("state") != "running":
         die("HEALTH_CHECK_FAIL: embedded Xray is not running")
-    if "26.9.9" not in str(xray.get("version", "")):
+    if deployed["xray_version"].lstrip("v") not in str(xray.get("version", "")):
         die(f"HEALTH_CHECK_FAIL: unexpected bundled Xray version: {xray.get('version')}")
     current = [x for x in inbounds() if x.get("port") == 443]
     if len(current) != 1 or not matches(current[0], uid):
@@ -230,6 +236,9 @@ def verify(path):
     print(f"OS: {Path('/etc/os-release').read_text().split('PRETTY_NAME=')[1].splitlines()[0].strip(chr(34))}")
     print(f"PUBLIC_IP: {ip}")
     print(f"DOMAIN: {DOMAIN}")
+    print(f"DEPLOYMENT_VERSION: {deployed['deployment_version']}")
+    print(f"3X_UI_VERSION: {deployed['version']}")
+    print(f"XRAY_VERSION: {deployed['xray_version']}")
     print(f"DOMAIN_RESOLVES_TO: {', '.join(resolved) if resolved else 'UNKNOWN'}")
     print("VMESS: PASS\nPORT_443: LISTENING\nSERVICE: ACTIVE\n3X_UI: ACTIVE")
     print(f"DNS_SWITCH_REQUIRED: {'NO' if ip != 'UNKNOWN' and ip in resolved else 'YES'}")
@@ -238,31 +247,53 @@ def verify(path):
         print("WARNING: public IP or DNS lookup unavailable; verify manually before switching DNS")
 
 
-def client_uri(uid):
-    data = {"v": "2", "ps": "DR-VMESS", "add": DOMAIN, "port": "443", "id": uid,
-            "aid": "0", "scy": "auto", "net": "tcp", "type": "none", "host": "", "path": "", "tls": "none"}
-    return "vmess://" + base64.b64encode(json.dumps(data, separators=(",", ":")).encode()).decode()
+def validate_official_uri(uri, uid):
+    if not isinstance(uri, str) or not uri.startswith("vmess://"):
+        die("CLIENT_EXPORT_CONFLICT: upstream did not return a VMess URI")
+    try:
+        data = json.loads(base64.b64decode(uri[8:], validate=True))
+        if not isinstance(data, dict):
+            raise ValueError("VMess link must be an object")
+        port = int(data["port"])
+        # 3x-ui v3.8.5 omits aid from its AEAD share link; its inbound has alterId=0.
+        aid = int(data.get("aid", 0))
+        link_uid = str(data["id"])
+    except (ValueError, KeyError, TypeError, binascii.Error):
+        die("CLIENT_EXPORT_CONFLICT: malformed upstream VMess URI")
+    if not (data.get("v") == "2" and data.get("add") == DOMAIN and port == 443
+            and link_uid.lower() == uid.lower() and aid == 0
+            and data.get("scy") == "auto" and data.get("net") == "tcp"
+            and data.get("type", "none") == "none" and data.get("tls", "none") == "none"):
+        die("CLIENT_EXPORT_CONFLICT: upstream link differs from the required client profile")
+    return uri
 
 
 def export(path):
     uid = state(path)["uuid"]
+    links = panel_request("GET", "panel/api/inbounds/allLinks")
+    if not isinstance(links, list) or len(links) != 1:
+        die("CLIENT_EXPORT_CONFLICT: expected exactly one upstream share link")
+    uri = validate_official_uri(links[0], uid)
     print("CLIENT CONFIGURATION (sensitive: UUID; do not save in public logs)")
-    print(client_uri(uid))
+    print(uri)
     print(f"Protocol: VMess\nAddress: {DOMAIN}\nPort: 443\nUUID: {uid}\nAlterID: 0\nEncryption: auto\nTransport: TCP / none\nTLS: off\nUDP: on (client setting)")
 
 
 def main():
     action = sys.argv[1]
     if action == "init-state":
-        path, version, uid = sys.argv[2:5]
+        path, version, xray_version, deployment_version, uid = sys.argv[2:7]
         if not valid_uuid(uid):
             die("VMESS_UUID must be a canonical UUID")
         if Path(path).exists():
             die("CONFIG_CONFLICT: state already exists")
-        write_state(path, {"version": version, "uuid": uid.lower()})
+        write_state(path, {"version": version, "xray_version": xray_version,
+                           "deployment_version": deployment_version, "uuid": uid.lower()})
     elif action == "check-state":
         data = state(sys.argv[2])
-        if data.get("version") != sys.argv[3] or (sys.argv[4] and data.get("uuid") != sys.argv[4].lower()):
+        if (data.get("version") != sys.argv[3] or data.get("xray_version") != sys.argv[4]
+                or data.get("deployment_version") != sys.argv[5]
+                or (sys.argv[6] and data.get("uuid") != sys.argv[6].lower())):
             die("CONFIG_CONFLICT: deployed version or UUID differs; no overwrite performed")
     elif action == "state-uuid":
         print(state(sys.argv[2])["uuid"])
@@ -281,7 +312,9 @@ def main():
         assert active_match(active, uid)
         assert not active_match({**active, "streamSettings": {"network": "ws"}}, uid)
         assert json.loads(json.dumps(p))["settings"]["clients"][0]["alterId"] == 0
-        assert json.loads(base64.b64decode(client_uri(uid)[8:]))["id"] == uid
+        sample = {"v": "2", "add": DOMAIN, "port": 443, "id": uid, "aid": 0,
+                  "scy": "auto", "net": "tcp", "type": "none", "tls": "none"}
+        assert validate_official_uri("vmess://" + base64.b64encode(json.dumps(sample).encode()).decode(), uid)
         print("LOCAL_TEST: PASS")
     else:
         die("Usage: dr.py init-state|check-state|state-uuid|configure|verify|export|self-test")

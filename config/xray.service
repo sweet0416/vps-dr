@@ -1,0 +1,14 @@
+[Unit]
+Description=VPS DR Xray
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStartPre=/usr/local/bin/xray run -test -config /usr/local/etc/xray/config.json
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

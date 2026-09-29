@@ -1,55 +1,60 @@
-# VPS disaster recovery
+# VPS DR V1 — direct Xray
 
-本仓库只用于在**新 VPS** 恢复 3x-ui + VMess TCP/443 节点。不会登录当前生产 VPS，也不会修改 Cloudflare DNS。本项目目前处于 `0.1.0-dev`，**禁止安装和真实 VPS 演练**：3x-ui v3.8.5 捆绑预发布 Xray v26.9.9，而其核心管理接口拒绝当前最新稳定版 v26.3.27。`--preflight` 会报告 `XRAY_STABLE_COMPATIBILITY_BLOCKED`，`READY_TO_INSTALL: NO`。
+## Purpose
 
-## 版本与启动入口
+在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。当前仅完成仓库实现；真实 VPS 和客户端连接仍待验证。
 
-| 模式 | 来源 | 状态 |
-| --- | --- | --- |
-| DEVELOPMENT | `main` | 可变，仅供代码检查和本地预检；不得据此部署 |
-| STABLE_DISASTER_RECOVERY | 固定 Git tag `v1.0.0` | **尚不存在**；真实 VPS 和客户端验证通过后才可创建 |
+## Quick Start
 
-开发预检（只检查，不安装）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/main/bootstrap.sh | sudo VPS_DR_REF=main bash -s -- --preflight
-```
-
-未来通过 [发布门槛](docs/RELEASE_GATE.md) 后，推荐灾备入口才是：
+当前 `main` 是可变开发入口；`v1.0.0` **尚未创建**。先在本地仓库或将来人工创建的临时 VPS 上检查代码。未来只有 [发布门槛](docs/RELEASE_GATE.md) 全部通过后，才使用固定 tag 的灾备命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/v1.0.0/bootstrap.sh | sudo bash
 ```
 
-该命令**目前不能执行**，因为 `v1.0.0` 尚未创建。`bootstrap.sh` 默认下载固定 tag；使用主分支必须显式设 `VPS_DR_REF=main`。下载后显示 `VPS_DR_VERSION` 和 `SOURCE_REF`；tag 与 `VERSION` 不一致会停止。tag 发布后记录并核对 tag commit SHA，避免移动 tag。日后版本更新须新建 tag，不能重写旧 tag。
+该固定 tag 命令目前不可执行。直接运行仓库中的 `bootstrap.sh` 会使用同目录的文件；从 raw 管道运行时默认下载 `v1.0.0`，开发预检须显式指定 `VPS_DR_REF=main`。`VERSION` 当前为 `0.1.0-dev`。
 
-## 固定组件与阻断原因
+## Preflight
 
-- 3x-ui 固定 `v3.8.5`，安装器固定到 commit `7ef22f94c950ff09f0870e2295fa65ad5968742c`。该发行包内置 Xray `v26.9.9`，属于 **pre-release**。
-- 截至 2026-09-29，Xray 官方最新非预发布版是 `v26.3.27`。3x-ui v3.8.5 的 `GetXrayVersions` 只列出 `v26.6.27` 起的核心版本，`UpdateXray` 拒绝不在列表中的版本。
-- 3x-ui 自己下载、校验并管理**一份** Xray 二进制及进程。仓库不单独安装 Xray，也不绕过面板兼容限制替换二进制。
-- 需要官方明确兼容的非预发布组合，或经审计的稳定 3x-ui 版本，才可把 `XRAY_STABLE_COMPATIBLE` 改为 `YES`。版本选择与升级必须重新做静态和真实 VPS 验证。
-
-详细证据见 [依赖审计](docs/DEPENDENCY_AUDIT.md)。
-
-原配置保持 VMess、TCP、443、AlterID 0、AEAD、`security=auto`、TCP header `none`、TLS off。UDP 是客户端开关，承载流量仍经过 VMess TCP。TLS off 沿用旧节点配置，不提供 TLS 传输保护。
-
-## 当前可做的检查
+在新机器上先运行，只检查，不安装、不改防火墙/systemd/配置：
 
 ```bash
-sudo bash ./install.sh --preflight
-sudo bash ./install.sh --dry-run
-python3 scripts/dr.py self-test
+sudo ./bootstrap.sh --preflight
 ```
 
-预检报告列出 OS、架构、root、网络、DNS、443 监听者、面板端口、磁盘、内存与阻断原因；不运行包管理器，不改防火墙/systemd/inbound。当前版本阻断时返回非零。要求 Ubuntu 22.04/24.04/26.04 或 Debian 12/13、amd64/arm64、systemd、apt、至少 1 GiB 可用磁盘和 256 MiB 可用内存。这些只是脚本门槛，尚未做真实 VPS 验证。
+预检检查 Ubuntu 22.04/24.04/26.04 或 Debian 12/13、amd64/arm64、root、systemd、必需命令、网络、DNS、磁盘、内存、已有 Xray/配置和 TCP 443 监听者。未知安装或未知 443 占用会停止。新机需要至少 1 GiB 可用磁盘和 256 MiB 可用内存；这只是静态门槛，真实 VPS 尚未验收。
 
-安装路径要求用户提供现有 UUID，不自动新建或更换。重复运行会核对版本、UUID、443 监听者、面板和 inbound；配置一致才复用，不一致停止。失败后只在尚无 3x-ui 与防火墙残留时重试；发现上游安装或已启用防火墙残留时停止并要求人工检查。绝不清理未知 inbound、结束未知进程、重置面板或覆盖未知配置。更多场景见 [测试计划](docs/REAL_VPS_TEST_PLAN.md)。
+## Install
 
-## 面板与客户端
+推荐复用旧客户端的 UUID，在临时测试机的**私密终端**输入；避免把 UUID 留在 shell 历史中：
 
-3x-ui 官方安装器随机生成面板用户名、密码、Web path 和 API token，写入新机 root-only `/etc/x-ui/install-result.env`。安装日志也按 root-only 权限保存，可能含凭据。请把凭据保存到密码管理器；不得贴到 issue、聊天记录或 Git。面板固定监听 `127.0.0.1`，通过 SSH 端口转发访问；公网只需 SSH 与 443/tcp。面板端口随机选 20000–59999，选定后检查冲突，不与 443 相同。不引入 VPN、隧道服务或 PKI。
+```bash
+sudo ./bootstrap.sh
+```
 
-`export-client.sh` 使用 3x-ui v3.8.5 的 `/panel/api/inbounds/allLinks` 官方链接并核对内容，不自行拼 VMess URI。上游该版本的 AEAD 分享链接省略 `aid` 字段，服务端 inbound 明确 `alterId=0`；Shadowrocket/PassWall 对省略字段的导入行为必须在真实客户端测试中确认，当前为 `NOT_VERIFIED`。导出链接含 UUID，应只在私密终端查看。
+也支持 `sudo VMESS_UUID="<uuid>" ./bootstrap.sh`。无 UUID 时可在提示处留空，或无人值守时不设置变量；脚本会生成新 UUID，并醒目提示旧客户端配置不再匹配。UUID 只写入新机 root-only `/etc/vps-dr/state.json` 和 `/usr/local/etc/xray/config.json`，绝不写入 Git。不要把安装输出或 `vmess://` 链接公开。面板、数据库、API token 和面板端口均不属于 V1。
 
-灾备当天与临时演练的不同流程见 [灾难恢复手册](docs/DISASTER_RECOVERY.md) 和 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md)。当前生产 DNS 仍应指向 `38.54.95.213`，演练全程不切换。
+固定 Xray `v26.3.27` 来自 [官方 release](https://github.com/XTLS/Xray-core/releases/tag/v26.3.27)。amd64/arm64 包同时用仓库固定 SHA-256 与官方 `.dgst` 的 SHA2-256 核对。配置先通过 `xray run -test`，再启动 systemd；服务的 `ExecStartPre` 也会再次验证配置。详情见 [发行资产审计](docs/XRAY_RELEASE_AUDIT.md)。脚本仅在已有 UFW **处于 active** 且缺少 443/tcp 允许规则时添加该规则；不启用 UFW、不更改默认策略或 SSH 配置。服务商防火墙仍需人工允许 443/tcp。
+
+## Test with temporary IP
+
+临时 VPS 演练期间，生产 DNS 继续指向 `38.54.95.213`。在新机导出使用临时 IP 的客户端配置：
+
+```bash
+sudo /opt/vps-dr/health-check.sh
+sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP
+```
+
+导出内容包含 UUID。先在 Shadowrocket、PassWall **新增临时节点**测试，不覆盖现有节点。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；两款客户端的实际导入和连接仍必须在真实演练中确认。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
+
+## DNS Cutover
+
+只有临时 VPS、Shadowrocket、PassWall 和幂等性全部通过且发布门槛放行后，灾难发生时才人工切换 `node.passwallv2ray.top` 的 A 记录，保持 **DNS Only / 灰云**。本仓库不会调用 Cloudflare。DNS 尚指向旧 IP 时，健康检查显示 `DNS_SWITCH_REQUIRED: YES`，不因此判定 Xray 故障。
+
+## Recovery
+
+同版本、同 UUID、同配置重跑会验证并输出 `ALREADY_CONFIGURED`；不同 UUID/配置、未知二进制、未知 systemd unit 或未知 443 服务会停止，不会覆盖或结束未知进程。若安装中断，root-only state 会保留 UUID，重跑只补齐缺失的本项目文件；发现已存在文件不一致时停止。故障处理见 [排查](docs/TROUBLESHOOTING.md)。
+
+## Uninstall
+
+在单独测试机上可运行 `sudo /opt/vps-dr/uninstall.sh`，输入 `REMOVE`。这会停用 Xray 并移除本项目 unit；保留二进制、root-only 配置/state 和防火墙规则以便恢复。不会删除未知文件。安全界限见 [SECURITY](docs/SECURITY.md)，灾难当天步骤见 [DISASTER_RECOVERY](docs/DISASTER_RECOVERY.md)。

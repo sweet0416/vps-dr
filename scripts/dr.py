@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""3x-ui v3.8.5 API and local verification for the private DR node."""
+"""Small, dependency-free config, state, share-link, and health helpers."""
 import base64
 import binascii
+import ipaddress
 import json
 import os
-import platform
 import re
 import socket
 import subprocess
@@ -15,309 +15,241 @@ import uuid
 from pathlib import Path
 
 DOMAIN = "node.passwallv2ray.top"
-XRAY = Path("/usr/local/x-ui/bin/xray-linux-amd64" if platform.machine() == "x86_64" else "/usr/local/x-ui/bin/xray-linux-arm64")
-XRAY_CONFIG = Path("/usr/local/x-ui/bin/config.json")
+XRAY = Path("/usr/local/bin/xray")
+CONFIG = Path("/usr/local/etc/xray/config.json")
+UNIT = "xray.service"
 
 
 def die(message):
     raise SystemExit(message)
 
 
-def valid_uuid(value):
+def canonical_uuid(value):
     try:
         parsed = uuid.UUID(value)
-        return str(parsed) == value.lower()
-    except (ValueError, AttributeError):
-        return False
-
-
-def state(path):
-    p = Path(path)
-    if not p.exists() or p.stat().st_mode & 0o077:
-        die("CONFIG_CONFLICT: state missing or readable by non-root users")
-    try:
-        data = json.loads(p.read_text())
-        if (not valid_uuid(data["uuid"])
-                or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", data["version"])
-                or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", data["xray_version"])
-                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?", data["deployment_version"])):
-            raise ValueError("invalid state fields")
-        return data
-    except (OSError, ValueError, KeyError, TypeError):
-        die("CONFIG_CONFLICT: invalid state file")
-
-
-def write_state(path, value):
-    p = Path(path)
-    p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(value, f)
-        f.write("\n")
+        if str(parsed) != value.lower():
+            raise ValueError("UUID must be canonical")
+        return str(parsed)
+    except (AttributeError, ValueError, TypeError):
+        die("CONFIG_CONFLICT: VMESS_UUID must be a canonical UUID")
 
 
 def profile(uid):
     return {
-        "enable": True, "remark": "DR-VMESS", "listen": "0.0.0.0",
-        "shareAddrStrategy": "custom", "shareAddr": DOMAIN,
-        "port": 443, "protocol": "vmess", "expiryTime": 0, "total": 0,
-        "settings": {"clients": [{"id": uid, "alterId": 0, "security": "auto", "email": "dr-vmess@local", "enable": True}]},
-        "streamSettings": {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "none"}}},
-        "sniffing": {"enabled": False},
+        "log": {"loglevel": "warning"},
+        "inbounds": [{
+            "listen": "0.0.0.0", "port": 443, "protocol": "vmess",
+            "settings": {"clients": [{"id": canonical_uuid(uid), "alterId": 0}]},
+            "streamSettings": {"network": "tcp", "security": "none",
+                               "tcpSettings": {"header": {"type": "none"}}},
+            "sniffing": {"enabled": False},
+        }],
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
     }
 
 
-def object_value(value):
-    return json.loads(value) if isinstance(value, str) else value
-
-
-def matches(inbound, uid):
+def read_state(path):
+    p = Path(path)
     try:
-        settings = object_value(inbound["settings"])
-        stream = object_value(inbound["streamSettings"])
-        clients = settings["clients"]
-        return (
-            inbound["protocol"] == "vmess" and inbound["port"] == 443
-            and inbound.get("listen", "") in ("", "0.0.0.0")
-            and inbound.get("enable") is True and inbound.get("remark") == "DR-VMESS"
-            and inbound.get("shareAddrStrategy") == "custom" and inbound.get("shareAddr") == DOMAIN
-            and inbound.get("total", 0) == 0 and inbound.get("expiryTime", 0) == 0
-            and stream["network"] == "tcp" and stream.get("security", "none") == "none"
-            and stream.get("tcpSettings", {}).get("header", {}).get("type", "none") == "none"
-            and len(clients) == 1 and clients[0]["id"].lower() == uid.lower()
-            and clients[0].get("alterId", 0) == 0 and clients[0].get("security", "auto") == "auto"
-            and clients[0].get("enable", True) is True
-        )
-    except (KeyError, TypeError, ValueError):
+        if p.is_symlink():
+            raise ValueError("state symlink")
+        meta = p.stat()
+        if os.name != "nt" and os.geteuid() == 0 and (meta.st_uid != 0 or meta.st_mode & 0o077):
+            raise ValueError("state permissions")
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if data.get("architecture") != "direct-xray-v1":
+            raise ValueError("state architecture")
+        data["uuid"] = canonical_uuid(data["uuid"])
+        if (not re.fullmatch(r"v\d+\.\d+\.\d+", data["xray_version"])
+                or not re.fullmatch(r"\d+\.\d+\.\d+(?:-dev)?", data["deployment_version"])):
+            raise ValueError("state version")
+        return data
+    except (OSError, ValueError, KeyError, TypeError):
+        die("CONFIG_CONFLICT: missing or invalid root-only state")
+
+
+def write_state(path, uid, xray_version, deployment_version):
+    p = Path(path)
+    uid = canonical_uuid(uid)
+    p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    data = {"architecture": "direct-xray-v1", "uuid": uid, "xray_version": xray_version,
+            "deployment_version": deployment_version}
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(data, stream)
+        stream.write("\n")
+
+
+def check_state(path, version, deployment_version, supplied_uid=""):
+    data = read_state(path)
+    if (data["xray_version"] != version or data["deployment_version"] != deployment_version
+            or (supplied_uid and data["uuid"] != canonical_uuid(supplied_uid))):
+        die("CONFIG_CONFLICT: deployed version or UUID differs; no overwrite")
+    return data
+
+
+def render_config(path, uid):
+    p = Path(path)
+    data = profile(uid)
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(data, stream, indent=2)
+        stream.write("\n")
+
+
+def config_matches(path, uid):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8")) == profile(uid)
+    except (OSError, ValueError, TypeError):
         return False
 
 
-def active_match(inbound, uid):
-    try:
-        stream = inbound["streamSettings"]
-        clients = inbound["settings"]["clients"]
-        return (inbound["protocol"] == "vmess" and inbound["port"] == 443
-                and inbound.get("listen", "") in ("", "0.0.0.0")
-                and stream["network"] == "tcp" and stream.get("security", "none") == "none"
-                and stream.get("tcpSettings", {}).get("header", {}).get("type", "none") == "none"
-                and len(clients) == 1 and clients[0]["id"].lower() == uid.lower()
-                and clients[0].get("alterId", 0) == 0)
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
-def panel_request(method, route, payload=None):
-    port = os.environ["XUI_PANEL_PORT"]
-    base = os.environ["XUI_WEB_BASE_PATH"].strip("/")
-    token = os.environ["XUI_API_TOKEN"]
-    url = f"http://127.0.0.1:{port}/{base}/{route.lstrip('/')}"
-    data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    for attempt in range(10):
+def uri_payload(uid, server=DOMAIN):
+    if server != DOMAIN:
         try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                result = json.load(response)
-            if not result.get("success"):
-                die(f"3x-ui API rejected {route}: {result.get('msg', 'unknown error')}")
-            return result.get("obj")
-        except (OSError, ValueError) as exc:
-            if attempt == 9:
-                die(f"3x-ui API unavailable at localhost for {route}: {exc}")
-            time.sleep(1)
+            ipaddress.IPv4Address(server)
+        except ipaddress.AddressValueError:
+            die("--server requires an IPv4 address for the temporary VPS")
+    return {"v": "2", "ps": "VPS-DR", "add": server, "port": "443",
+            "id": canonical_uuid(uid), "aid": "0", "scy": "auto", "net": "tcp",
+            "type": "none", "host": "", "path": "", "tls": "none"}
 
 
-def inbounds():
-    value = panel_request("GET", "panel/api/inbounds/list")
-    if not isinstance(value, list):
-        die("3x-ui returned an unexpected inbound list")
+def encode_uri(uid, server=DOMAIN):
+    data = uri_payload(uid, server)
+    raw = json.dumps(data, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    uri = "vmess://" + base64.b64encode(raw).decode("ascii")
+    if decode_uri(uri) != data:
+        die("VMESS_URI_ROUNDTRIP_FAIL")
+    return uri
+
+
+def decode_uri(uri):
+    if not uri.startswith("vmess://"):
+        die("VMESS_URI_INVALID")
+    try:
+        value = json.loads(base64.b64decode(uri[8:], validate=True))
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        die("VMESS_URI_INVALID")
+    if not isinstance(value, dict):
+        die("VMESS_URI_INVALID")
     return value
 
 
-def configure(path):
-    uid = state(path)["uuid"]
-    current = [x for x in inbounds() if x.get("port") == 443 or x.get("remark") == "DR-VMESS"]
-    if current:
-        if len(current) == 1 and matches(current[0], uid):
-            print("ALREADY_CONFIGURED")
-            return
-        die("CONFIG_CONFLICT: existing inbound on port 443 or with remark DR-VMESS differs from expected profile")
-    panel_request("POST", "panel/api/inbounds/add", profile(uid))
-    for _ in range(20):
-        current = [x for x in inbounds() if x.get("port") == 443]
-        if len(current) == 1 and matches(current[0], uid):
-            print("VMess inbound created through official 3x-ui API")
-            return
-        time.sleep(1)
-    die("Inbound creation was not confirmed by the panel API")
-
-
 def run(*args):
-    return subprocess.run(args, text=True, capture_output=True, check=False)
+    return subprocess.run(args, text=True, capture_output=True, check=False, timeout=15)
 
 
-def listening(port):
-    result = run("ss", "-ltnH")
+def xray_version_ok(version):
+    result = run(str(XRAY), "version")
+    return result.returncode == 0 and re.search(r"^Xray " + re.escape(version.lstrip("v")) + r"\b", result.stdout) is not None
+
+
+def listener_pid():
+    result = run("ss", "-ltnpH", "( sport = :443 )")
     if result.returncode:
-        return False
-    return any(line.split()[3].rsplit(":", 1)[-1] == str(port) for line in result.stdout.splitlines() if len(line.split()) >= 4)
+        die("HEALTH_CHECK_FAIL: ss could not inspect TCP 443")
+    lines = [line for line in result.stdout.splitlines() if re.search(r"(?<!\d):443\s", line)]
+    if len(lines) != 1:
+        die("HEALTH_CHECK_FAIL: expected one TCP 443 listener")
+    match = re.search(r"pid=(\d+)", lines[0])
+    if not match:
+        die("HEALTH_CHECK_FAIL: TCP 443 owner unavailable")
+    return int(match.group(1))
 
 
 def public_ip():
     try:
-        with urllib.request.urlopen("https://api.ipify.org", timeout=5) as response:
+        with urllib.request.urlopen("https://api.ipify.org", timeout=8) as response:
             value = response.read(64).decode().strip()
-        socket.inet_aton(value)
-        return value
+        return str(ipaddress.IPv4Address(value))
     except (OSError, ValueError):
         return "UNKNOWN"
 
 
 def dns_ips():
     try:
-        return sorted({x[4][0] for x in socket.getaddrinfo(DOMAIN, None, socket.AF_INET)})
+        return sorted({item[4][0] for item in socket.getaddrinfo(DOMAIN, None, socket.AF_INET)})
     except OSError:
         return []
 
 
-def verify(path):
-    deployed = state(path)
-    uid = deployed["uuid"]
-    if not run("systemctl", "is-active", "--quiet", "x-ui").returncode == 0:
-        die("HEALTH_CHECK_FAIL: x-ui systemd service is not active")
-    panel_version = run("/usr/local/x-ui/x-ui", "-v")
-    if panel_version.returncode or deployed["version"].lstrip("v") not in panel_version.stdout:
-        die("HEALTH_CHECK_FAIL: 3x-ui version differs from pinned version")
-    xray = {}
+def health(path):
+    state = read_state(path)
+    if not CONFIG.is_file() or CONFIG.is_symlink() or (os.name != "nt" and
+                               (CONFIG.stat().st_uid != 0 or CONFIG.stat().st_mode & 0o077)):
+        die("HEALTH_CHECK_FAIL: config permissions or path are unsafe")
+    if not XRAY.is_file() or not xray_version_ok(state["xray_version"]):
+        die("HEALTH_CHECK_FAIL: Xray binary missing or version mismatch")
+    if not config_matches(CONFIG, state["uuid"]):
+        die("HEALTH_CHECK_FAIL: config or UUID differs from root-only state")
+    result = run(str(XRAY), "run", "-test", "-config", str(CONFIG))
+    if result.returncode:
+        die("HEALTH_CHECK_FAIL: Xray config test failed")
     for _ in range(20):
-        status = panel_request("GET", "panel/api/server/status")
-        xray = status.get("xray", {}) if isinstance(status, dict) else {}
-        if xray.get("state") == "running" and listening(443) and XRAY_CONFIG.is_file():
+        if (run("systemctl", "is-active", "--quiet", UNIT).returncode == 0
+                and run("ss", "-ltnH", "( sport = :443 )").stdout.strip()):
             break
         time.sleep(1)
-    if xray.get("state") != "running":
-        die("HEALTH_CHECK_FAIL: embedded Xray is not running")
-    if deployed["xray_version"].lstrip("v") not in str(xray.get("version", "")):
-        die(f"HEALTH_CHECK_FAIL: unexpected bundled Xray version: {xray.get('version')}")
-    current = [x for x in inbounds() if x.get("port") == 443]
-    if len(current) != 1 or not matches(current[0], uid):
-        die("HEALTH_CHECK_FAIL: inbound or UUID differs from expected profile")
-    if not XRAY_CONFIG.is_file() or not XRAY.is_file():
-        die("HEALTH_CHECK_FAIL: Xray binary or generated config missing")
-    try:
-        config = json.loads(XRAY_CONFIG.read_text())
-    except (OSError, ValueError):
-        die("HEALTH_CHECK_FAIL: generated Xray configuration is not valid JSON")
-    if not any(active_match(i, uid) for i in config.get("inbounds", [])):
-        die("HEALTH_CHECK_FAIL: generated Xray configuration differs from expected VMess profile")
-    test = subprocess.run((str(XRAY), "run", "-test", "-config", str(XRAY_CONFIG)),
-                          text=True, capture_output=True, check=False,
-                          env={**os.environ, "XRAY_LOCATION_ASSET": "/usr/local/x-ui/bin"})
-    if test.returncode:
-        die(f"HEALTH_CHECK_FAIL: Xray config test failed: {test.stderr[-500:]}")
-    if not listening(443):
-        die("HEALTH_CHECK_FAIL: TCP 443 not listening")
+    else:
+        die("HEALTH_CHECK_FAIL: xray.service or TCP 443 did not become active")
+    pid = listener_pid()
+    service_pid = run("systemctl", "show", "--property=MainPID", "--value", UNIT)
+    if service_pid.returncode or service_pid.stdout.strip() != str(pid):
+        die("HEALTH_CHECK_FAIL: TCP 443 does not belong to xray.service")
+    if os.path.realpath(f"/proc/{pid}/exe") != str(XRAY):
+        die("HEALTH_CHECK_FAIL: TCP 443 owner is not the installed Xray binary")
     try:
         with socket.create_connection(("127.0.0.1", 443), timeout=3):
             pass
-    except OSError as exc:
-        die(f"HEALTH_CHECK_FAIL: localhost TCP 443 connection failed: {exc}")
-    port = os.environ["XUI_PANEL_PORT"]
-    if not listening(port):
-        die("HEALTH_CHECK_FAIL: 3x-ui panel port not listening")
-    addresses = [line.split()[3] for line in run("ss", "-ltnH").stdout.splitlines() if len(line.split()) >= 4 and line.split()[3].rsplit(":", 1)[-1] == port]
-    if not addresses or any(not address.startswith("127.0.0.1:") for address in addresses):
-        die("HEALTH_CHECK_FAIL: panel is not restricted to localhost")
-    ip = public_ip()
-    resolved = dns_ips()
-    print("========================================")
-    print("VPS DISASTER RECOVERY STATUS")
-    print("========================================")
-    print(f"OS: {Path('/etc/os-release').read_text().split('PRETTY_NAME=')[1].splitlines()[0].strip(chr(34))}")
-    print(f"PUBLIC_IP: {ip}")
-    print(f"DOMAIN: {DOMAIN}")
-    print(f"DEPLOYMENT_VERSION: {deployed['deployment_version']}")
-    print(f"3X_UI_VERSION: {deployed['version']}")
-    print(f"XRAY_VERSION: {deployed['xray_version']}")
-    print(f"DOMAIN_RESOLVES_TO: {', '.join(resolved) if resolved else 'UNKNOWN'}")
-    print("VMESS: PASS\nPORT_443: LISTENING\nSERVICE: ACTIVE\n3X_UI: ACTIVE")
+    except OSError:
+        die("HEALTH_CHECK_FAIL: localhost TCP 443 unavailable")
+    ip, resolved = public_ip(), dns_ips()
+    print("=== VPS_DR_HEALTH ===")
+    print(f"DEPLOYMENT_VERSION: {state['deployment_version']}")
+    print(f"XRAY_VERSION: {state['xray_version']}")
+    print("CONFIG_JSON: PASS\nXRAY_CONFIG_TEST: PASS\nSYSTEMD: ACTIVE\nPORT_443: XRAY")
+    print(f"PUBLIC_IP: {ip}\nDOMAIN: {DOMAIN}")
+    print(f"DOMAIN_RESOLVES_TO: {','.join(resolved) if resolved else 'UNKNOWN'}")
     print(f"DNS_SWITCH_REQUIRED: {'NO' if ip != 'UNKNOWN' and ip in resolved else 'YES'}")
-    print("========================================")
     if ip == "UNKNOWN" or not resolved:
-        print("WARNING: public IP or DNS lookup unavailable; verify manually before switching DNS")
-
-
-def validate_official_uri(uri, uid):
-    if not isinstance(uri, str) or not uri.startswith("vmess://"):
-        die("CLIENT_EXPORT_CONFLICT: upstream did not return a VMess URI")
-    try:
-        data = json.loads(base64.b64decode(uri[8:], validate=True))
-        if not isinstance(data, dict):
-            raise ValueError("VMess link must be an object")
-        port = int(data["port"])
-        # 3x-ui v3.8.5 omits aid from its AEAD share link; its inbound has alterId=0.
-        aid = int(data.get("aid", 0))
-        link_uid = str(data["id"])
-    except (ValueError, KeyError, TypeError, binascii.Error):
-        die("CLIENT_EXPORT_CONFLICT: malformed upstream VMess URI")
-    if not (data.get("v") == "2" and data.get("add") == DOMAIN and port == 443
-            and link_uid.lower() == uid.lower() and aid == 0
-            and data.get("scy") == "auto" and data.get("net") == "tcp"
-            and data.get("type", "none") == "none" and data.get("tls", "none") == "none"):
-        die("CLIENT_EXPORT_CONFLICT: upstream link differs from the required client profile")
-    return uri
-
-
-def export(path):
-    uid = state(path)["uuid"]
-    links = panel_request("GET", "panel/api/inbounds/allLinks")
-    if not isinstance(links, list) or len(links) != 1:
-        die("CLIENT_EXPORT_CONFLICT: expected exactly one upstream share link")
-    uri = validate_official_uri(links[0], uid)
-    print("CLIENT CONFIGURATION (sensitive: UUID; do not save in public logs)")
-    print(uri)
-    print(f"Protocol: VMess\nAddress: {DOMAIN}\nPort: 443\nUUID: {uid}\nAlterID: 0\nEncryption: auto\nTransport: TCP / none\nTLS: off\nUDP: on (client setting)")
+        die("HEALTH_CHECK_FAIL: public IP or domain resolution not verified")
 
 
 def main():
-    action = sys.argv[1]
-    if action == "init-state":
-        path, version, xray_version, deployment_version, uid = sys.argv[2:7]
-        if not valid_uuid(uid):
-            die("VMESS_UUID must be a canonical UUID")
-        if Path(path).exists():
-            die("CONFIG_CONFLICT: state already exists")
-        write_state(path, {"version": version, "xray_version": xray_version,
-                           "deployment_version": deployment_version, "uuid": uid.lower()})
-    elif action == "check-state":
-        data = state(sys.argv[2])
-        if (data.get("version") != sys.argv[3] or data.get("xray_version") != sys.argv[4]
-                or data.get("deployment_version") != sys.argv[5]
-                or (sys.argv[6] and data.get("uuid") != sys.argv[6].lower())):
-            die("CONFIG_CONFLICT: deployed version or UUID differs; no overwrite performed")
+    if len(sys.argv) < 2:
+        die("Usage: dr.py new-uuid|state-init|state-check|state-uuid|render|config-check|health|export|self-test")
+    action, *args = sys.argv[1:]
+    if action == "new-uuid":
+        print(uuid.uuid4())
+    elif action == "state-init":
+        write_state(*args)
+    elif action == "state-check":
+        check_state(*args)
     elif action == "state-uuid":
-        print(state(sys.argv[2])["uuid"])
-    elif action == "configure":
-        configure(sys.argv[2])
-    elif action == "verify":
-        verify(sys.argv[2])
+        print(read_state(args[0])["uuid"])
+    elif action == "render":
+        render_config(*args)
+    elif action == "config-check":
+        if not config_matches(*args):
+            die("CONFIG_CONFLICT: existing Xray config differs")
+    elif action == "health":
+        health(args[0])
     elif action == "export":
-        export(sys.argv[2])
+        state = read_state(args[0])
+        server = args[1] if len(args) > 1 else DOMAIN
+        print("CLIENT CONFIGURATION — contains UUID; do not publish")
+        print(encode_uri(state["uuid"], server))
+        print(f"Protocol: VMess\nAddress: {server}\nPort: 443\nUUID: {state['uuid']}")
+        print("AlterID: 0\nAEAD: enabled\nEncryption: auto\nTransport: tcp / none\nTLS: off\nUDP: client setting")
     elif action == "self-test":
         uid = str(uuid.uuid4())
-        p = profile(uid)
-        assert matches(p, uid)
-        assert not matches({**p, "port": 444}, uid)
-        active = {k: v for k, v in p.items() if k in ("protocol", "port", "listen", "settings", "streamSettings")}
-        assert active_match(active, uid)
-        assert not active_match({**active, "streamSettings": {"network": "ws"}}, uid)
-        assert json.loads(json.dumps(p))["settings"]["clients"][0]["alterId"] == 0
-        sample = {"v": "2", "add": DOMAIN, "port": 443, "id": uid, "aid": 0,
-                  "scy": "auto", "net": "tcp", "type": "none", "tls": "none"}
-        assert validate_official_uri("vmess://" + base64.b64encode(json.dumps(sample).encode()).decode(), uid)
+        assert json.loads(json.dumps(profile(uid))) == profile(uid)
+        assert decode_uri(encode_uri(uid)) == uri_payload(uid)
+        assert decode_uri(encode_uri(uid, "1.2.3.4")) == uri_payload(uid, "1.2.3.4")
         print("LOCAL_TEST: PASS")
     else:
-        die("Usage: dr.py init-state|check-state|state-uuid|configure|verify|export|self-test")
+        die("Unknown action")
 
 
 if __name__ == "__main__":

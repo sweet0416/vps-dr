@@ -1,9 +1,9 @@
 # 安全边界
 
-- **只在全新 VPS 使用。** 安装会运行官方 3x-ui 安装器、修改新机 UFW 和 systemd；不触碰现有生产 VPS。
-- UUID、面板密码和 API token 保存在新 VPS root-only 文件中，不在仓库。终端导出的 `vmess://` 含 UUID，禁止粘贴到公开 issue 或日志。
-- 3x-ui 面板 HTTP 只监听 `127.0.0.1`，只能通过 SSH 隧道访问。安装过程中先放行 SSH/443 并启用 UFW，再启动面板。
-- SSH 端口、root 登录和密码登录配置不变。上线后可另行加固 SSH，但先确认替代登录方法。
-- VMess TCP/443 **没有 TLS**，是为了与原客户端节点兼容；它不是抗审查或加密传输的长期升级方案。
-- 灾备入口必须用经验证的固定 Git tag，并记录 tag commit SHA。`main` 是可变开发入口，不得用于灾备。当前无 release/tag，预发布 Xray 阻断安装。上游 3x-ui 安装器固定到 v3.8.5 commit，release 资产由官方脚本核对 SHA-256。
-- 服务商安全组和 VPS 出站连通性不由 UFW 控制；必须在服务商控制台检查。
+- 只在用户控制的**新 VPS** 执行安装。当前生产 VPS `38.54.95.213`、Cloudflare 和现有域名配置不由脚本访问或修改。
+- UUID 保存在新 VPS 的 root-only state 与 Xray 配置中。终端导出的 VMess URI 含 UUID，不能贴到公开 issue、日志或 Git。`.env.example` 只有占位符。
+- Xray 发行版固定 tag，并核对仓库固定 SHA-256 与官方 `.dgst`。新版本必须重新审计并测试；不使用浮动 `latest` 或预发布版本。
+- systemd 运行前执行 Xray 配置测试。配置不一致、未知二进制或未知 443 进程会停止，不覆盖或结束它们。
+- 安装脚本不会启用 UFW、修改默认防火墙策略或 SSH 配置。若 UFW 已启用，只会补充允许 443/tcp；服务商防火墙由用户检查。
+- VMess TCP/443 的 TLS 关闭是为了与现有客户端参数兼容。它不具备 TLS 传输保护；实际公网/客户端连接尚未验证。
+- `main` 是可变开发入口；稳定灾备必须使用经过真实 VPS 与客户端验证的固定 tag。当前无 `v1.0.0` tag。

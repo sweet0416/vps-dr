@@ -1,19 +1,17 @@
-# 发布门槛
+# V1 发布门槛
 
-当前状态：`DR_RELEASE_READY=NO`。`v1.0.0` tag/release 尚不存在；README 中的固定 tag 命令只是验证通过后的预定入口。
+当前 `DR_RELEASE_READY=NO`；不得创建 `v1.0.0` tag/release。
 
-所有条件必须同时通过，才允许 `DR_RELEASE_READY=YES`：
-
-| 条件 | 当前状态 | 证据要求 |
+| 必须同时满足 | 当前状态 | 说明 |
 | --- | --- | --- |
-| STATIC_VALIDATION | PASS（本机可执行项） | Shell 语法、Python 编译/单元测试、生成 JSON 往返、diff 与本地路径检查；无仓库 JSON 文件；shellcheck 未安装 |
-| REAL_VPS_VALIDATION | NOT_VERIFIED | 临时 LightNode VPS 安装与健康报告 |
-| SHADOWROCKET_TEST | NOT_VERIFIED | 临时 IP 节点真实导入及连接 |
+| STATIC_VALIDATION | PASS（本机可做项） | Shell/Python、JSON、diff、静态路径和秘密扫描；Linux 主机行为另列 |
+| XRAY_CONFIG_TEST | PASS（Windows 同版本） | 官方 Xray v26.3.27 解析生成的配置；Linux 运行待验证 |
+| VMESS_URI_ROUNDTRIP_TEST | PASS | 默认域名与临时 IPv4 地址的 Base64 JSON 往返与字段核对 |
+| SECRET_SCAN | PASS | 当前树、变更和 Git 历史的已知秘密模式扫描 |
+| IDEMPOTENCY_LOCAL_TEST | PASS | state 复用、不同 UUID/配置冲突与旧状态拒绝 |
+| REAL_VPS_VALIDATION | NOT_VERIFIED | 临时 VPS 安装、Linux 配置测试、systemd、443、公网 |
+| SHADOWROCKET_TEST | NOT_VERIFIED | 临时 IP 节点真实导入与连接 |
 | PASSWALL_TEST | NOT_VERIFIED | 临时 IP 节点真实连接 |
-| IDEMPOTENCY_TEST | NOT_VERIFIED | 新装、重跑、失败恢复与冲突场景 |
-| SECRETS_COMMITTED | NO（模式扫描） | 当前树与两笔历史提交的 UUID、私钥、令牌模式扫描；真实 VPS 秘密未输入仓库 |
-| PRERELEASE_DEPENDENCIES | YES | 必须换成官方支持的稳定组合并核实为 NO |
+| PRERELEASE_DEPENDENCIES | NO | 固定官方非预发布 Xray v26.3.27 |
 
-发布顺序：解决稳定版本兼容阻断 → 静态验证 → 在**临时** VPS 上按 `REAL_VPS_TEST_PLAN.md` 完成全部测试 → 把 `VERSION` 更新为 `1.0.0` 并固定组件与 commit → 审核最终 diff/秘密 → 创建且不移动 `v1.0.0` tag → 记录 tag commit SHA → 验证固定 tag 启动入口。任何一个条件未通过，停止发布。
-
-主分支是开发入口，会改变。固定 tag 是灾备入口。不得把 `main`、`latest` 或预发布版本作为默认灾备依赖。
+上述所有项有真实证据且均为 PASS/NO，才可标记 `DR_RELEASE_READY=YES`。随后更新 `VERSION` 为 `1.0.0`、审阅最终差异和秘密、创建不可移动的 `v1.0.0` tag，并记录 tag commit SHA。`main` 是开发入口，不是稳定灾备入口。不得把静态测试当成真实 VPS 或客户端验收。

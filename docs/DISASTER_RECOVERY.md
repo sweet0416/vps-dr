@@ -1,17 +1,14 @@
-# 灾难当天：9 步恢复（当前版本未放行）
+# 灾难恢复（仅在 V1 放行后执行）
 
-**当前禁止执行安装。** `DR_RELEASE_READY=NO`；先完成 [发布门槛](RELEASE_GATE.md)。下列步骤只在 `v1.0.0` 经真实 VPS 与客户端验证并创建后生效。当前测试使用 [临时 VPS 计划](REAL_VPS_TEST_PLAN.md)，不切生产 DNS。
+当前 `DR_RELEASE_READY=NO`，`v1.0.0` tag 尚未创建；本页是未来灾难当天的操作顺序。先完成 [临时 VPS 演练](REAL_VPS_TEST_PLAN.md) 与 [发布门槛](RELEASE_GATE.md)。
 
-1. 在 LightNode 或其他服务商创建**全新** Ubuntu 24.04 LTS VPS，确认服务商防火墙允许 SSH 和 443/tcp。不要操作旧 VPS。
-2. 从 Shadowrocket/PassWall 查看并安全记录**原 VMess UUID**。
-3. `ssh root@NEW_IP` 登录新 VPS。
-4. 执行：`curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/v1.0.0/bootstrap.sh | sudo bash`（tag 尚不存在，当前不可执行）。先运行 `--preflight` 并确认 `READY_TO_INSTALL: YES`。
-5. 在终端输入原 UUID；不会自动生成新 UUID。等待 `VMESS: PASS`、`SERVICE: ACTIVE`、`PORT_443: LISTENING`。若失败，先看 [排查说明](TROUBLESHOOTING.md)，**不要切 DNS**。
-6. 在 Cloudflare 把 `node.passwallv2ray.top` 的 **A / node** 从 `38.54.95.213` 改成 **NEW_IP**，代理状态保持 **DNS Only / 灰云**。
-7. 用 `nslookup node.passwallv2ray.top` 或 `dig node.passwallv2ray.top` 确认解析到 NEW_IP；可能需要等待 DNS 缓存过期。
-8. 在 Shadowrocket 和 PassWall 上用原节点做**真实连接测试**。如需临时配置，运行 `sudo bash /opt/vps-dr/export-client.sh` 输出 VMess 链接。
-9. 确认新节点稳定后再决定旧 VPS 的去留；不要立即删除。
+1. 确认旧节点确实故障。不要自动关闭或重置原 VPS。
+2. 新建全新 VPS，确认服务商防火墙允许 SSH 与 TCP 443。
+3. 安全取得原 Shadowrocket / PassWall 节点 UUID，避免新 UUID 导致旧客户端不匹配。
+4. 在新 VPS 下载**已验证的固定 tag**源码，先运行 `sudo ./bootstrap.sh --preflight`；要求 `READY_TO_INSTALL: YES`。
+5. 输入原 UUID，运行 `sudo ./bootstrap.sh`；核对健康报告与 Xray 版本。
+6. 先用 `sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP` 创建临时客户端节点，分别在 Shadowrocket 和 PassWall 做真实连接测试。
+7. 只有新 VPS 实连正常且人工决定切换后，才在 Cloudflare 把 `node.passwallv2ray.top` 的 A 记录指向 NEW_VPS_IP，保持 DNS Only / 灰云。
+8. 等待 DNS 生效，再用原节点做真实连接测试；确认稳定后再决定旧 VPS 去留。
 
-面板仅本机可访问。安装输出会给 SSH 隧道命令、面板 URL 和 root-only 凭据位置。
-
-回退：新 VPS 失败时保持原 DNS 不变；修复脚本后在新的测试 VPS 复测。若已切 DNS，人工把 A 记录改回已确认可用的地址。这个仓库从不自动改 DNS。
+回退：若新 VPS 未验证通过，保持旧 DNS 不变；若已切换后失败，人工改回已确认可用的地址。本仓库不自动修改 DNS。

@@ -4,6 +4,8 @@
 
 在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启、幂等性及 Shadowrocket 扫码和实连验收。V1 以 Shadowrocket 为主要客户端；PassWall 实际连接未测试，属于可选范围。`v1.0.0` 尚未发布。
 
+本仓库仅供作者个人自托管灾难恢复使用；使用范围、责任与限制见 [Disclaimer / 免责声明](DISCLAIMER.md)。
+
 ## Quick Start
 
 当前 `main` 是可变开发入口；`v1.0.0` **尚未创建**。下面是人工批准并创建固定 tag 后的灾备命令：

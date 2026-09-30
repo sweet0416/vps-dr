@@ -11,6 +11,6 @@
 7. 可选：在 PassWall 新增同参数的临时 IP 节点并真实连接；不要修改旧节点。V1 本次未做该项，记录为 `NOT_TESTED`。
 8. 用同一 UUID 再次运行 bootstrap，期望 `ALREADY_CONFIGURED`；另在隔离测试场景核实不同 UUID、未知 Xray、未知 443 占用均停止。中断安装后仅补齐缺失的本项目文件，不覆盖不一致文件。
 9. 若是专用测试机，可运行 `sudo /opt/vps-dr/uninstall.sh` 验证停用与保留配置，并按需复装；不得在生产机测试卸载。
-10. 记录 `REAL_VPS_VALIDATION`、`SHADOWROCKET_TEST`、`QR_IMPORT_TEST`、`PASSWALL_TEST`、幂等与重启结果。必需项目通过后审阅 [发布门槛](RELEASE_GATE.md)；创建 `v1.0.0` tag 仍须人工批准。
+10. 记录 `REAL_VPS_VALIDATION`、`SHADOWROCKET_TEST`、`QR_IMPORT_TEST`、`PASSWALL_TEST`、幂等与重启结果。V1 已记录的验收结果与范围见 [发布验证结果](RELEASE_GATE.md)；V1 灾难恢复使用固定 tag `v1.0.0`。
 
 测试期间生产 DNS 不变。`xray run -test`、localhost TCP 和公网 TCP 都不能替代客户端真实连接。

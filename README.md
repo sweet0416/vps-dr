@@ -2,19 +2,21 @@
 
 ## Purpose
 
-在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启、幂等性及 Shadowrocket 扫码和实连验收。V1 以 Shadowrocket 为主要客户端；PassWall 实际连接未测试，属于可选范围。`v1.0.0` 尚未发布。
+在**全新 VPS** 上恢复个人自托管的 VMess TCP/443 灾难恢复服务。V1 安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。V1 正式稳定版本使用固定 tag `v1.0.0`；`main` 是后续开发入口，不是灾难当天的首选入口。临时 LightNode 已完成 Ubuntu 24.04 amd64 安装、重启、幂等性及 Shadowrocket 扫码和实连验收。PassWall 实际连接未纳入 V1 必需验收范围。
 
 本仓库仅供作者个人自托管灾难恢复使用；使用范围、责任与限制见 [Disclaimer / 免责声明](DISCLAIMER.md)。
 
 ## Quick Start
 
-当前 `main` 是可变开发入口；`v1.0.0` **尚未创建**。下面是人工批准并创建固定 tag 后的灾备命令：
+正式灾备版本使用固定 tag `v1.0.0`。该 tag 对应冻结的 V1 恢复快照；后续开发使用 `main` 和新的版本号，不回写或移动 `v1.0.0`。
+
+正式灾备命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/v1.0.0/bootstrap.sh | sudo bash
 ```
 
-该固定 tag 命令目前不可执行。直接运行仓库中的 `bootstrap.sh` 会使用同目录的文件；从 raw 管道运行时默认下载 `v1.0.0`，开发预检须显式指定 `VPS_DR_REF=main`。`VERSION` 已准备为 `1.0.0`；必须经 [发布门槛](docs/RELEASE_GATE.md) 和人工批准后才创建 tag。创建后记录并核对 tag 的 commit SHA，禁止移动 tag。
+从 raw 管道运行时，bootstrap 默认下载固定版本 `v1.0.0`；在检出的仓库目录直接运行时使用该目录中的文件。开发预检如需使用 `main`，须显式指定 `VPS_DR_REF=main`。恢复前应核对所用 tag 对应的提交 SHA，并保存旧 VMess UUID。新 VPS 部署后先用临时 IP 验证 Shadowrocket；验证通过后再切换 Cloudflare DNS。不要先删除旧 VPS。
 
 ## Preflight
 

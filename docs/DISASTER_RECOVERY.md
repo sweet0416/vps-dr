@@ -1,6 +1,6 @@
 # 灾难恢复（仅在 V1 放行后执行）
 
-当前 `DR_RELEASE_READY=YES`（技术门槛），但 `v1.0.0` tag 尚未创建，等待人工发布批准；本页是未来灾难当天的操作顺序。实机证据与范围见 [临时 VPS 演练](REAL_VPS_TEST_PLAN.md) 和 [发布门槛](RELEASE_GATE.md)。固定 tag 入口只在 tag 创建后可用。
+本页记录 V1 灾难当天的人工恢复顺序。V1 使用固定版本 tag `v1.0.0`，它对应冻结的恢复快照；灾难恢复应使用这个固定版本，而不是可变的 `main`。实机证据与范围见 [临时 VPS 演练](REAL_VPS_TEST_PLAN.md) 和 [发布验证结果](RELEASE_GATE.md)。
 
 1. 确认旧节点确实故障。不要自动关闭或重置原 VPS。
 2. 新建全新 VPS，确认服务商防火墙允许 SSH 与 TCP 443。

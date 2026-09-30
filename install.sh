@@ -115,16 +115,23 @@ echo "Provider firewall/security group must allow TCP 443. SSH configuration was
 echo "Production DNS was not changed."
 
 if [[ -t 1 ]]; then
-  if ! command -v qrencode >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-    if ! (apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qrencode >/dev/null); then
-      echo "QR_TOOL_INSTALL_FAILED: Xray is healthy; install qrencode to display a QR code." >&2
+  server=$(python3 "$here/scripts/dr.py" public-ip || true)
+  if [[ -n "$server" ]]; then
+    if ! command -v qrencode >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+      if ! (apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qrencode >/dev/null); then
+        echo "QR_TOOL_INSTALL_FAILED: Xray is healthy; client URI will still be shown." >&2
+      fi
     fi
-  fi
-  if command -v qrencode >/dev/null 2>&1; then
-    python3 "$here/scripts/dr.py" qr "$state" || echo "QR_GENERATION_FAILED: Xray remains healthy." >&2
+    if command -v qrencode >/dev/null 2>&1; then
+      bash "$here/export-client.sh" --server "$server" --qr
+    else
+      bash "$here/export-client.sh" --server "$server"
+      echo "QR_CODE_DISPLAY: UNAVAILABLE"
+    fi
   else
-    echo "QR_UNAVAILABLE: Xray is healthy; qrencode is not installed." >&2
+    echo "CLIENT_EXPORT_UNAVAILABLE: Xray is healthy; public IP could not be detected." >&2
+    echo "QR_CODE_DISPLAY: UNAVAILABLE"
   fi
 else
-  echo "QR_SKIPPED: terminal output is not interactive."
+  echo "CLIENT_EXPORT_SKIPPED: terminal output is not interactive."
 fi

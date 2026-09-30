@@ -48,7 +48,7 @@ if [[ "$state" == NO ]]; then
 else
   if command -v python3 >/dev/null 2>&1 && ! python3 "$here/scripts/dr.py" state-check "$STATE_DIR/state.json" "$XRAY_VERSION" "$(<"$here/VERSION")" >/dev/null 2>&1; then block CONFIG_CONFLICT; fi
   if [[ "$existing" == YES ]]; then
-    if [[ ! -x /usr/local/bin/xray ]] || ! /usr/local/bin/xray version 2>/dev/null | grep -q "^Xray ${XRAY_VERSION#v} "; then block EXISTING_XRAY_CONFLICT; fi
+    if [[ ! -x /usr/local/bin/xray ]] || ! version_output=$(/usr/local/bin/xray version 2>/dev/null) || [[ "$version_output" != "Xray ${XRAY_VERSION#v} "* ]]; then block EXISTING_XRAY_CONFLICT; fi
     if [[ "$arch" == x86_64 ]]; then binary_sha=$XRAY_BINARY_SHA256_AMD64; else binary_sha=$XRAY_BINARY_SHA256_ARM64; fi
     if [[ "$(sha256sum /usr/local/bin/xray 2>/dev/null | awk '{print $1}')" != "$binary_sha" ]]; then block EXISTING_XRAY_CONFLICT; fi
   fi

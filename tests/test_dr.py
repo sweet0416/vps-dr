@@ -61,20 +61,32 @@ class DirectXrayTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "--server requires"):
             dr.encode_uri(self.uid, "node.passwallv2ray.top.evil.example")
 
-    def test_auto_qr_encodes_detected_public_ip(self):
+    def test_export_uri_and_qr_use_same_client_config(self):
         path = self.root / "state.json"
         dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
-        with (patch.object(dr, "public_ip", return_value="1.2.3.4"),
-              patch.object(dr.subprocess, "run") as qrencode,
-              patch.object(sys, "argv", ["dr.py", "qr", str(path)]),
+        with (patch.object(dr.subprocess, "run") as qrencode,
+              patch.object(sys, "argv", ["dr.py", "export", str(path), "1.2.3.4", "--qr"]),
               redirect_stdout(StringIO()) as output):
             qrencode.return_value.returncode = 0
             dr.main()
-        self.assertIn("1.2.3.4:443", output.getvalue())
+        lines = output.getvalue().splitlines()
+        uri = next(line for line in lines if line.startswith("vmess://"))
+        self.assertIn("Address: 1.2.3.4", lines)
+        self.assertIn("QR_CODE_DISPLAY: PASS", lines)
         self.assertEqual(qrencode.call_args.args[0],
                          ["qrencode", "-t", "ANSIUTF8", "-m", "2", "-o", "-"])
-        self.assertEqual(dr.decode_uri(qrencode.call_args.kwargs["input"]),
-                         dr.uri_payload(self.uid, "1.2.3.4"))
+        self.assertEqual(qrencode.call_args.kwargs["input"], uri)
+        self.assertEqual(dr.decode_uri(uri), dr.uri_payload(self.uid, "1.2.3.4"))
+
+    def test_qr_failure_keeps_uri_available(self):
+        path = self.root / "state.json"
+        dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
+        with (patch.object(dr.subprocess, "run", side_effect=FileNotFoundError),
+              patch.object(sys, "argv", ["dr.py", "export", str(path), "1.2.3.4", "--qr"]),
+              redirect_stdout(StringIO()) as output):
+            dr.main()
+        self.assertIn("vmess://", output.getvalue())
+        self.assertIn("QR_CODE_DISPLAY: UNAVAILABLE", output.getvalue())
 
     def test_systemd_unit_checks_config_before_start(self):
         unit = configparser.ConfigParser(interpolation=None)

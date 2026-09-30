@@ -2,7 +2,7 @@
 
 ## Purpose
 
-在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。当前仅完成仓库实现；真实 VPS 和客户端连接仍待验证。
+在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启和幂等性演练，Shadowrocket 已由用户确认可用；PassWall 的公网出口与本次新增的自动二维码路径仍待完整验证，`v1.0.0` 尚未发布。
 
 ## Quick Start
 
@@ -34,6 +34,8 @@ sudo ./bootstrap.sh
 
 也支持 `sudo VMESS_UUID="<uuid>" ./bootstrap.sh`。无 UUID 时可在提示处留空，或无人值守时不设置变量；脚本会生成新 UUID，并醒目提示旧客户端配置不再匹配。UUID 只写入新机 root-only `/etc/vps-dr/state.json` 和 `/usr/local/etc/xray/config.json`，绝不写入 Git。不要把安装输出或 `vmess://` 链接公开。面板、数据库、API token 和面板端口均不属于 V1。
 
+在交互式终端安装成功或重跑确认 `ALREADY_CONFIGURED` 后，脚本会自动安装缺失的 Ubuntu/Debian `qrencode` 工具，并在终端显示可扫描的 VMess 二维码。二维码使用新 VPS 检测到的公网 IP；演练期间不会误用仍指向生产机的域名。二维码含 UUID，勿截图公开或保存到日志。若二维码工具安装失败，Xray 服务仍可用，脚本会明确提示；非交互式输出会跳过二维码。
+
 固定 Xray `v26.3.27` 来自 [官方 release](https://github.com/XTLS/Xray-core/releases/tag/v26.3.27)。amd64/arm64 包同时用仓库固定 SHA-256 与官方 `.dgst` 的 SHA2-256 核对。配置先通过 `xray run -test`，再启动 systemd；服务的 `ExecStartPre` 也会再次验证配置。详情见 [发行资产审计](docs/XRAY_RELEASE_AUDIT.md)。脚本仅在已有 UFW **处于 active** 且缺少 443/tcp 允许规则时添加该规则；不启用 UFW、不更改默认策略或 SSH 配置。服务商防火墙仍需人工允许 443/tcp。
 
 ## Test with temporary IP
@@ -45,7 +47,7 @@ sudo /opt/vps-dr/health-check.sh
 sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP
 ```
 
-导出内容包含 UUID。先在 Shadowrocket、PassWall **新增临时节点**测试，不覆盖现有节点。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；两款客户端的实际导入和连接仍必须在真实演练中确认。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
+导出内容包含 UUID。安装完成时也会自动显示使用新 VPS 公网 IP 的二维码。先在 Shadowrocket、PassWall **新增临时节点**测试，不覆盖现有节点。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；两款客户端的实际导入和连接仍必须在真实演练中确认。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
 
 ## DNS Cutover
 

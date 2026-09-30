@@ -113,3 +113,18 @@ fi
 echo "$outcome"
 echo "Provider firewall/security group must allow TCP 443. SSH configuration was not changed."
 echo "Production DNS was not changed."
+
+if [[ -t 1 ]]; then
+  if ! command -v qrencode >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    if ! (apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qrencode >/dev/null); then
+      echo "QR_TOOL_INSTALL_FAILED: Xray is healthy; install qrencode to display a QR code." >&2
+    fi
+  fi
+  if command -v qrencode >/dev/null 2>&1; then
+    python3 "$here/scripts/dr.py" qr "$state" || echo "QR_GENERATION_FAILED: Xray remains healthy." >&2
+  else
+    echo "QR_UNAVAILABLE: Xray is healthy; qrencode is not installed." >&2
+  fi
+else
+  echo "QR_SKIPPED: terminal output is not interactive."
+fi

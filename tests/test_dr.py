@@ -5,7 +5,10 @@ import sys
 import tempfile
 import unittest
 import uuid
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import dr  # noqa: E402
@@ -57,6 +60,21 @@ class DirectXrayTests(unittest.TestCase):
             self.assertEqual(data["tls"], "none")
         with self.assertRaisesRegex(SystemExit, "--server requires"):
             dr.encode_uri(self.uid, "node.passwallv2ray.top.evil.example")
+
+    def test_auto_qr_encodes_detected_public_ip(self):
+        path = self.root / "state.json"
+        dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
+        with (patch.object(dr, "public_ip", return_value="1.2.3.4"),
+              patch.object(dr.subprocess, "run") as qrencode,
+              patch.object(sys, "argv", ["dr.py", "qr", str(path)]),
+              redirect_stdout(StringIO()) as output):
+            qrencode.return_value.returncode = 0
+            dr.main()
+        self.assertIn("1.2.3.4:443", output.getvalue())
+        self.assertEqual(qrencode.call_args.args[0],
+                         ["qrencode", "-t", "ANSIUTF8", "-m", "2", "-o", "-"])
+        self.assertEqual(dr.decode_uri(qrencode.call_args.kwargs["input"]),
+                         dr.uri_payload(self.uid, "1.2.3.4"))
 
     def test_systemd_unit_checks_config_before_start(self):
         unit = configparser.ConfigParser(interpolation=None)

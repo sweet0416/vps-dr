@@ -1,13 +1,13 @@
 # 临时 LightNode VPS 测试计划
 
-状态：`NOT_VERIFIED`。本阶段不创建 VPS、不部署、不访问生产 VPS、不修改 Cloudflare。下一阶段由用户手动创建临时 LightNode VPS；全程保持 `node.passwallv2ray.top → 38.54.95.213`。
+状态：`IN_PROGRESS`。用户创建的临时 LightNode `38.60.248.15` 已使用提交 `3bdc0719d3965824f2a02eea3c6757eda5a0f2d9` 完成安装、重启后健康检查和同配置重跑。Shadowrocket 已由用户确认可用；PassWall 的公网出口与后来新增的自动二维码路径仍未完整验证。全程保持 `node.passwallv2ray.top → 38.54.95.213`；不访问生产 VPS、不修改 Cloudflare。
 
 1. 新开一台全新 Ubuntu 24.04 LTS LightNode VPS，记录 `NEW_VPS_IP`；在服务商防火墙允许 SSH 和 TCP 443。
 2. 获取固定待测 commit 的仓库文件并审阅；运行 `sudo ./bootstrap.sh --preflight`，记录脱敏输出。要求 `READY_TO_INSTALL: YES`，未知 443 owner 时停止。
 3. 使用**测试 UUID 或旧 UUID**运行 `sudo ./bootstrap.sh`。UUID 在私密终端输入，勿贴到公开日志或仓库。无 UUID 时可生成，但旧客户端不能直接复用。
 4. 运行 `sudo /opt/vps-dr/health-check.sh`；确认 Xray 版本、JSON、`xray run -test`、systemd active、443 属于 Xray、UUID 匹配、localhost TCP、公共 IP 和 DNS 检查。
 5. 在外部网络确认 `NEW_VPS_IP:443` 公网可达；同时核查服务商防火墙和已有 UFW 规则。
-6. 运行 `sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP`，在 Shadowrocket **新增临时节点**导入并真实连接。核对 VMess/TCP/443/AlterID 0/AEAD/auto/TLS off；不要覆盖旧节点。
+6. 对含自动二维码的新提交，确认交互式 bootstrap 结束时显示二维码，地址为 `NEW_VPS_IP` 且 Shadowrocket 可扫描。也可运行 `sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP` 核对字段，并在 Shadowrocket **新增临时节点**真实连接。核对 VMess/TCP/443/AlterID 0/AEAD/auto/TLS off；不要覆盖旧节点。
 7. 在 PassWall 新增同参数的临时 IP 节点并真实连接；不要修改旧节点。
 8. 用同一 UUID 再次运行 bootstrap，期望 `ALREADY_CONFIGURED`；另在隔离测试场景核实不同 UUID、未知 Xray、未知 443 占用均停止。中断安装后仅补齐缺失的本项目文件，不覆盖不一致文件。
 9. 若是专用测试机，可运行 `sudo /opt/vps-dr/uninstall.sh` 验证停用与保留配置，并按需复装；不得在生产机测试卸载。

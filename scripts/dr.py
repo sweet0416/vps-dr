@@ -218,7 +218,7 @@ def health(path):
 
 def main():
     if len(sys.argv) < 2:
-        die("Usage: dr.py new-uuid|state-init|state-check|state-uuid|render|config-check|health|export|self-test")
+        die("Usage: dr.py new-uuid|state-init|state-check|state-uuid|render|config-check|health|export|qr|self-test")
     action, *args = sys.argv[1:]
     if action == "new-uuid":
         print(uuid.uuid4())
@@ -242,6 +242,20 @@ def main():
         print(encode_uri(state["uuid"], server))
         print(f"Protocol: VMess\nAddress: {server}\nPort: 443\nUUID: {state['uuid']}")
         print("AlterID: 0\nAEAD: enabled\nEncryption: auto\nTransport: tcp / none\nTLS: off\nUDP: client setting")
+    elif action == "qr":
+        state = read_state(args[0])
+        server = public_ip()
+        if server == "UNKNOWN":
+            die("QR_UNAVAILABLE: public IP could not be detected")
+        print(f"=== PRIVATE VMESS QR: {server}:443 ===", flush=True)
+        print("Scan in Shadowrocket; keep this terminal output private.", flush=True)
+        try:
+            result = subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", "-o", "-"],
+                                    input=encode_uri(state["uuid"], server), text=True, check=False)
+        except OSError:
+            die("QR_UNAVAILABLE: qrencode could not start")
+        if result.returncode:
+            die("QR_GENERATION_FAILED")
     elif action == "self-test":
         uid = str(uuid.uuid4())
         assert json.loads(json.dumps(profile(uid))) == profile(uid)

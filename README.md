@@ -2,7 +2,7 @@
 
 ## Purpose
 
-在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启和幂等性演练，Shadowrocket 已由用户确认可用；自动二维码已在测试 VPS 显示，扫码导入及 PassWall 的公网出口仍待用户验证。`v1.0.0` 尚未发布。
+在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启和幂等性演练；用户确认 Shadowrocket 的自动二维码导入与连通性测试正常。PassWall 的公网出口仍待验证，`v1.0.0` 尚未发布。
 
 ## Quick Start
 
@@ -47,7 +47,7 @@ sudo /opt/vps-dr/health-check.sh
 sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP
 ```
 
-导出内容包含 UUID。安装完成时也会自动显示使用新 VPS 公网 IP 的手动参数、URI 和二维码。先在 Shadowrocket、PassWall **新增临时节点**测试，不覆盖现有节点。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；自动显示已在测试 VPS 验证，二维码扫码导入仍待用户确认。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
+导出内容包含 UUID。安装完成时也会自动显示使用新 VPS 公网 IP 的手动参数、URI 和二维码。先在 Shadowrocket、PassWall **新增临时节点**测试，不覆盖现有节点。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；自动显示和 Shadowrocket 扫码导入已在测试 VPS 验证。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
 
 ## DNS Cutover
 

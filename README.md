@@ -2,17 +2,17 @@
 
 ## Purpose
 
-在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启和幂等性演练；用户确认 Shadowrocket 的自动二维码导入与连通性测试正常。PassWall 的公网出口仍待验证，`v1.0.0` 尚未发布。
+在**全新 VPS** 上恢复一个与现有 Shadowrocket / PassWall 节点参数一致的 VMess TCP/443 服务。V1 只安装固定稳定版 Xray、最小 JSON 配置和 systemd 服务。不会登录或修改当前生产 VPS `38.54.95.213`，不会自动修改 Cloudflare DNS。临时 LightNode 已完成安装、重启、幂等性及 Shadowrocket 扫码和实连验收。V1 以 Shadowrocket 为主要客户端；PassWall 实际连接未测试，属于可选范围。`v1.0.0` 尚未发布。
 
 ## Quick Start
 
-当前 `main` 是可变开发入口；`v1.0.0` **尚未创建**。先在本地仓库或将来人工创建的临时 VPS 上检查代码。未来只有 [发布门槛](docs/RELEASE_GATE.md) 全部通过后，才使用固定 tag 的灾备命令：
+当前 `main` 是可变开发入口；`v1.0.0` **尚未创建**。下面是人工批准并创建固定 tag 后的灾备命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/v1.0.0/bootstrap.sh | sudo bash
 ```
 
-该固定 tag 命令目前不可执行。直接运行仓库中的 `bootstrap.sh` 会使用同目录的文件；从 raw 管道运行时默认下载 `v1.0.0`，开发预检须显式指定 `VPS_DR_REF=main`。`VERSION` 当前为 `0.1.0-dev`。
+该固定 tag 命令目前不可执行。直接运行仓库中的 `bootstrap.sh` 会使用同目录的文件；从 raw 管道运行时默认下载 `v1.0.0`，开发预检须显式指定 `VPS_DR_REF=main`。`VERSION` 已准备为 `1.0.0`；必须经 [发布门槛](docs/RELEASE_GATE.md) 和人工批准后才创建 tag。创建后记录并核对 tag 的 commit SHA，禁止移动 tag。
 
 ## Preflight
 
@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/v1.0.0/bootstrap.s
 sudo ./bootstrap.sh --preflight
 ```
 
-预检检查 Ubuntu 22.04/24.04/26.04 或 Debian 12/13、amd64/arm64、root、systemd、必需命令、网络、DNS、磁盘、内存、已有 Xray/配置和 TCP 443 监听者。未知安装或未知 443 占用会停止。新机需要至少 1 GiB 可用磁盘和 256 MiB 可用内存；这只是静态门槛，真实 VPS 尚未验收。
+预检检查 Ubuntu 22.04/24.04/26.04 或 Debian 12/13、amd64/arm64、root、systemd、必需命令、网络、DNS、磁盘、内存、已有 Xray/配置和 TCP 443 监听者。未知安装或未知 443 占用会停止。新机需要至少 1 GiB 可用磁盘和 256 MiB 可用内存。真实验收已在 Ubuntu 24.04 amd64 完成；其他系统和架构尚未实机验证。
 
 ## Install
 
@@ -47,11 +47,11 @@ sudo /opt/vps-dr/health-check.sh
 sudo /opt/vps-dr/export-client.sh --server NEW_VPS_IP
 ```
 
-导出内容包含 UUID。安装完成时也会自动显示使用新 VPS 公网 IP 的手动参数、URI 和二维码。先在 Shadowrocket、PassWall **新增临时节点**测试，不覆盖现有节点。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；自动显示和 Shadowrocket 扫码导入已在测试 VPS 验证。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
+导出内容包含 UUID。安装完成时也会自动显示使用新 VPS 公网 IP 的手动参数、URI 和二维码。先在 Shadowrocket **新增临时节点**测试，不覆盖现有节点；PassWall 测试可选。默认不带 `--server` 时，导出地址为 `node.passwallv2ray.top`。URI 采用已记录的 VMess Base64 JSON 分享格式并做本地 encode/decode 往返；自动显示和 Shadowrocket 扫码、连通性已在测试 VPS 验证。按 [真实 VPS 测试计划](docs/REAL_VPS_TEST_PLAN.md) 操作。
 
 ## DNS Cutover
 
-只有临时 VPS、Shadowrocket、PassWall 和幂等性全部通过且发布门槛放行后，灾难发生时才人工切换 `node.passwallv2ray.top` 的 A 记录，保持 **DNS Only / 灰云**。本仓库不会调用 Cloudflare。DNS 尚指向旧 IP 时，健康检查显示 `DNS_SWITCH_REQUIRED: YES`，不因此判定 Xray 故障。
+只有临时 VPS、Shadowrocket 和幂等性通过且发布门槛放行后，灾难发生时才人工切换 `node.passwallv2ray.top` 的 A 记录，保持 **DNS Only / 灰云**。PassWall 实际连接不属于 V1 必需发布门槛。本仓库不会调用 Cloudflare。DNS 尚指向旧 IP 时，健康检查显示 `DNS_SWITCH_REQUIRED: YES`，不因此判定 Xray 故障。
 
 ## Recovery
 

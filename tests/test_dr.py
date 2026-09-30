@@ -17,6 +17,7 @@ import dr  # noqa: E402
 class DirectXrayTests(unittest.TestCase):
     def setUp(self):
         self.uid = str(uuid.uuid4())
+        self.version = (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -36,17 +37,17 @@ class DirectXrayTests(unittest.TestCase):
 
     def test_state_reuse_and_uuid_conflict(self):
         path = self.root / "state.json"
-        dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
-        self.assertEqual(dr.check_state(path, "v26.3.27", "0.1.0-dev")["uuid"], self.uid)
+        dr.write_state(path, self.uid, "v26.3.27", self.version)
+        self.assertEqual(dr.check_state(path, "v26.3.27", self.version)["uuid"], self.uid)
         with self.assertRaisesRegex(SystemExit, "CONFIG_CONFLICT"):
-            dr.check_state(path, "v26.3.27", "0.1.0-dev", str(uuid.uuid4()))
+            dr.check_state(path, "v26.3.27", self.version, str(uuid.uuid4()))
         with self.assertRaises(FileExistsError):
-            dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
+            dr.write_state(path, self.uid, "v26.3.27", self.version)
 
     def test_legacy_panel_state_is_rejected(self):
         path = self.root / "state.json"
         path.write_text(json.dumps({"uuid": self.uid, "xray_version": "v26.3.27",
-                                    "deployment_version": "0.1.0-dev"}))
+                                    "deployment_version": self.version}))
         with self.assertRaisesRegex(SystemExit, "CONFIG_CONFLICT"):
             dr.read_state(path)
 
@@ -63,7 +64,7 @@ class DirectXrayTests(unittest.TestCase):
 
     def test_export_uri_and_qr_use_same_client_config(self):
         path = self.root / "state.json"
-        dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
+        dr.write_state(path, self.uid, "v26.3.27", self.version)
         with (patch.object(dr.subprocess, "run") as qrencode,
               patch.object(sys, "argv", ["dr.py", "export", str(path), "1.2.3.4", "--qr"]),
               redirect_stdout(StringIO()) as output):
@@ -80,7 +81,7 @@ class DirectXrayTests(unittest.TestCase):
 
     def test_qr_failure_keeps_uri_available(self):
         path = self.root / "state.json"
-        dr.write_state(path, self.uid, "v26.3.27", "0.1.0-dev")
+        dr.write_state(path, self.uid, "v26.3.27", self.version)
         with (patch.object(dr.subprocess, "run", side_effect=FileNotFoundError),
               patch.object(sys, "argv", ["dr.py", "export", str(path), "1.2.3.4", "--qr"]),
               redirect_stdout(StringIO()) as output):

@@ -14,4 +14,4 @@
 
 **DNS_SWITCH_REQUIRED: YES**：演练期间 DNS 保持旧 IP，这是预期。使用 `export-client.sh --server NEW_VPS_IP` 测试，不切生产 DNS。
 
-**客户端无法连接**：核对 VMess、TCP、443、同一 UUID、AlterID 0、AEAD、auto、TLS off，并确认服务器和客户端时间同步。URI 往返测试不能代替 Shadowrocket / PassWall 实连。
+**客户端无法连接**：核对 VMess、TCP、443、同一 UUID、AlterID 0、AEAD、auto、TLS off，并确认服务器和客户端时间同步。URI 往返测试不能代替实际客户端连接；V1 必需验收使用 Shadowrocket，PassWall 为可选项。

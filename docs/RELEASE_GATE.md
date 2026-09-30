@@ -9,7 +9,8 @@
 | VMESS_URI_ROUNDTRIP_TEST | PASS | 默认域名与临时 IPv4 地址的 Base64 JSON 往返与字段核对 |
 | SECRET_SCAN | PASS | 当前树、变更和 Git 历史的已知秘密模式扫描 |
 | IDEMPOTENCY_LOCAL_TEST | PASS | state 复用、不同 UUID/配置冲突与旧状态拒绝 |
-| REAL_VPS_VALIDATION | IN_PROGRESS | 38.60.248.15 已完成安装、重启后健康检查和同配置重跑；本次二维码改动尚未经该 VPS 测试 |
+| REAL_VPS_VALIDATION | IN_PROGRESS | 38.60.248.15 已完成安装、重启后健康检查、同配置重跑和自动二维码显示；新二维码扫码导入仍待用户确认 |
+| QR_AUTO_DISPLAY | PASS | 工具提交 ef5cb95 在已配置测试 VPS 重跑返回 ALREADY_CONFIGURED 与 QR_CODE_DISPLAY: PASS，运行文件校验值未变 |
 | SHADOWROCKET_TEST | PASS | 用户确认临时 IP 节点实际可用 |
 | PASSWALL_TEST | PARTIAL | 节点测速与切换后连通性有结果；经该节点访问网页及公网出口尚未核对 |
 | PRERELEASE_DEPENDENCIES | NO | 固定官方非预发布 Xray v26.3.27 |

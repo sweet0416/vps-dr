@@ -45,6 +45,10 @@ show_menu() {
   printf '  ├────────────────────────────────────────────────┤\n'
   panel_line "节点状态  $status" "$status_style"
   panel_line '节点协议  VMess / TCP 443'
+  local bbr_status bbr_style=$bold
+  bbr_status=$(python3 "$here/scripts/bbr.py" status 2>/dev/null) || bbr_status='状态不可用'
+  [[ $bbr_status != 已开启 ]] || bbr_style=$good
+  panel_line "BBR 状态  $bbr_status" "$bbr_style"
   printf '  ├────────────────────────────────────────────────┤\n'
   panel_line ''
   menu_item 1 '安装 / 继续安装'
@@ -52,11 +56,12 @@ show_menu() {
   menu_item 3 '检查运行状态'
   menu_item 4 '重启节点服务'
   menu_item 5 '升级管理脚本'
+  menu_item 6 '一键开启 BBR'
   panel_line ''
   printf '  ├────────────────────────────────────────────────┤\n'
   panel_line '[0]  退出'
   printf '  └────────────────────────────────────────────────┘\n'
-  printf '\n  %s请选择 [0-5] > %s' "$bold" "$reset"
+  printf '\n  %s请选择 [0-6] > %s' "$bold" "$reset"
 }
 
 show_client() {
@@ -110,8 +115,11 @@ while true; do
     5)
       if bash "$here/install.sh" --upgrade-management; then last_status=0; else last_status=$?; fi
       ;;
+    6)
+      if python3 "$here/scripts/bbr.py" enable; then last_status=0; else last_status=$?; fi
+      ;;
     0) exit "$last_status" ;;
-    *) echo '请输入 0、1、2、3、4 或 5。'; last_status=2; continue ;;
+    *) echo '请输入 0、1、2、3、4、5 或 6。'; last_status=2; continue ;;
   esac
   if (( last_status == 0 )); then
     echo '操作完成。客户端实际连通性请在客户端测试。'

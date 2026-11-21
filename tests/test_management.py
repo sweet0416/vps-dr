@@ -34,6 +34,42 @@ class ManagementTests(unittest.TestCase):
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, dest)
 
+    def test_caidan_shortcut_create_repeat_and_conflict(self):
+        command = self.root / 'bin' / 'caidan'
+        command.parent.mkdir()
+        manage.shortcut(ROOT, command, check_only=True)
+        self.assertFalse(command.exists())
+        manage.shortcut(ROOT, command)
+        self.assertEqual(command.read_bytes(), (ROOT/'scripts/caidan.sh').read_bytes())
+        self.assertEqual(command.stat().st_mode & 0o777, 0o755)
+        before = command.stat().st_mtime_ns
+        manage.shortcut(ROOT, command)
+        self.assertEqual(command.stat().st_mtime_ns, before)
+        command.write_text('existing user command')
+        with self.assertRaisesRegex(ValueError, '未知来源'):
+            manage.shortcut(ROOT, command)
+        self.assertEqual(command.read_text(), 'existing user command')
+
+    def test_caidan_failed_write_keeps_existing_command(self):
+        command = self.root / 'caidan'
+        command.write_bytes((ROOT/'scripts/caidan.sh').read_bytes())
+        command.chmod(0o644)
+        before = command.read_bytes()
+        with patch.object(manage.os, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                manage.shortcut(ROOT, command)
+        self.assertEqual(command.read_bytes(), before)
+        self.assertFalse(list(self.root.glob('.vps-dr-caidan-*')))
+
+    def test_caidan_symlink_is_not_replaced(self):
+        command = self.root / 'caidan'
+        original = self.root / 'original'
+        original.write_text('user command')
+        command.symlink_to(original)
+        with self.assertRaisesRegex(ValueError, '占用'):
+            manage.shortcut(ROOT, command)
+        self.assertEqual(original.read_text(), 'user command')
+
     def test_first_deploy_and_repeat(self):
         state = self.root / 'state.json'
         state.write_text('retained private state')

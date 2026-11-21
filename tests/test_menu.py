@@ -35,6 +35,7 @@ class MenuTests(unittest.TestCase):
         (self.source/'menu.sh').write_text(s)
         for name in ('install.sh','preflight.sh','health-check.sh','export-client.sh'):
             self.script(self.source/name,f'printf "%s\\n" "{name} $*" >> "$ACTION_LOG"\nexit "${{STUB_STATUS:-0}}"\n')
+        (self.source/'scripts/bbr.py').write_text("import os,sys\nfrom pathlib import Path\nif sys.argv[1] == 'status':\n print(os.environ.get('TEST_BBR_STATUS','未开启（cubic）'))\nelse:\n with Path(os.environ['ACTION_LOG']).open('a') as f: print('bbr enable',file=f)\n sys.exit(int(os.environ.get('BBR_EXIT','0')))\n")
         self.script(self.bin/'systemctl','echo "systemctl $*" >> "$ACTION_LOG"\nexit 0\n')
         self.script(self.bin/'qrencode','exit 0\n')
         self.script(self.bin/'apt-get','exit 1\n')
@@ -127,12 +128,23 @@ class MenuTests(unittest.TestCase):
                     self.assertEqual(width,52,line)
 
     def test_menu_all_branches_and_invalid_choice(self):
-        code,output=self.menu('1\n2\n3\n4\n5\n9\n0\n')
+        code,output=self.menu('1\n2\n3\n4\n5\n6\n9\n0\n')
         self.assertEqual(code,2)
         log=self.log.read_text()
-        for action in ('install.sh ','export-client.sh --server 8.8.4.4 --qr','health-check.sh','systemctl restart xray.service','install.sh --upgrade-management'):
+        for action in ('install.sh ','export-client.sh --server 8.8.4.4 --qr','health-check.sh','systemctl restart xray.service','install.sh --upgrade-management','bbr enable'):
             self.assertIn(action,log)
-        self.assertIn('请输入 0、1、2、3、4 或 5',output)
+        self.assertIn('请输入 0、1、2、3、4、5 或 6',output)
+
+    def test_bbr_display_and_failed_enable_return_to_menu(self):
+        for state in ('已开启', '未开启（cubic）', '状态不可用'):
+            with self.subTest(state=state):
+                self.env['TEST_BBR_STATUS'] = state
+                self.env['BBR_EXIT'] = '8'
+                code, output = self.menu('6\n0\n')
+                self.assertEqual(code, 8, output)
+                self.assertIn('BBR 状态  ' + state, output)
+                self.assertGreaterEqual(output.count('BBR 状态'), 2)
+                self.assertIn('退出码 8', output)
 
     def test_manual_address_and_qr_install_failure(self):
         self.env['TEST_IP']=''

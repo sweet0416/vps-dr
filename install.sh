@@ -17,10 +17,12 @@ fi
 exec 9>/run/lock/vps-dr.lock
 flock -n 9 || { echo 'INSTALL_IN_PROGRESS: 另一个安装或升级正在运行，请稍后重试。' >&2; exit 1; }
 python3 "$here/scripts/manage.py" recover /opt/vps-dr
+python3 "$here/scripts/manage.py" shortcut-check "$here" /usr/local/bin/caidan
 if [[ "${1:-}" == --upgrade-management ]]; then
   [[ -f "$state" ]] || { echo 'STATE_REQUIRED: 尚未安装，请选择菜单 1。' >&2; exit 1; }
   bash "$here/preflight.sh" --local || exit 1
   python3 "$here/scripts/manage.py" upgrade "$here" /opt/vps-dr
+  python3 "$here/scripts/manage.py" shortcut-install "$here" /usr/local/bin/caidan
   exit 0
 fi
 bash "$here/preflight.sh" || { echo 'PREFLIGHT_BLOCKED: 预检未通过，未执行安装。' >&2; exit 1; }
@@ -95,6 +97,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
   if ! ufw status | grep -Eq '^443/tcp[[:space:]]+ALLOW'; then ufw allow 443/tcp; fi
 fi
 python3 "$here/scripts/manage.py" upgrade "$here" /opt/vps-dr
+python3 "$here/scripts/manage.py" shortcut-install "$here" /usr/local/bin/caidan
 
 if systemctl is-active --quiet xray.service; then
   systemctl is-enabled --quiet xray.service || systemctl enable xray.service

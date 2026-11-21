@@ -15,6 +15,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 DOMAIN = os.environ.get("VPS_DR_DOMAIN", "")
 XRAY = Path("/usr/local/bin/xray")
 CONFIG = Path("/usr/local/etc/xray/config.json")
@@ -93,9 +95,15 @@ def write_state(path, uid, xray_version, deployment_version):
 
 def check_state(path, version, deployment_version, supplied_uid=""):
     data = read_state(path)
-    if (data["xray_version"] != version or data["deployment_version"] not in {"0.1.0-dev", "1.0.0", deployment_version}
+    if (data["deployment_version"] not in {"0.1.0-dev", "1.0.0", "1.1.0", deployment_version}
             or (supplied_uid and data["uuid"] != canonical_uuid(supplied_uid))):
         die("CONFIG_CONFLICT: Xray 版本、状态格式或 UUID 不兼容，已停止覆盖")
+    if data["xray_version"] != version:
+        try:
+            import update
+            update.verify_installed(path, check_unit=False, check_config=False)
+        except (ImportError, OSError, ValueError, RuntimeError):
+            die("CONFIG_CONFLICT: Xray 核心没有匹配的官方升级校验记录，已停止覆盖")
     return data
 
 
@@ -205,6 +213,11 @@ def dns_ips():
 
 def health(path):
     state = read_state(path)
+    try:
+        import update
+        update.verify_installed(path)
+    except (ImportError, OSError, ValueError, RuntimeError):
+        die("HEALTH_CHECK_FAIL: 核心摘要、配置或实际服务定义不受信，请核对后重试")
     if not CONFIG.is_file() or CONFIG.is_symlink() or (os.name != "nt" and
                                (CONFIG.stat().st_uid != 0 or CONFIG.stat().st_mode & 0o077)):
         die("HEALTH_CHECK_FAIL: 配置路径或权限不安全")

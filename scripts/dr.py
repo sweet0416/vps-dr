@@ -10,11 +10,12 @@ import socket
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.request
 import uuid
 from pathlib import Path
 
-DOMAIN = "node.passwallv2ray.top"
+DOMAIN = os.environ.get("VPS_DR_DOMAIN", "")
 XRAY = Path("/usr/local/bin/xray")
 CONFIG = Path("/usr/local/etc/xray/config.json")
 UNIT = "xray.service"
@@ -31,7 +32,7 @@ def canonical_uuid(value):
             raise ValueError("UUID must be canonical")
         return str(parsed)
     except (AttributeError, ValueError, TypeError):
-        die("CONFIG_CONFLICT: VMESS_UUID must be a canonical UUID")
+        die("CONFIG_CONFLICT: VMESS_UUID 必须为规范 UUID")
 
 
 def profile(uid):
@@ -57,7 +58,7 @@ def read_state(path):
         if os.name != "nt" and os.geteuid() == 0 and (meta.st_uid != 0 or meta.st_mode & 0o077):
             raise ValueError("state permissions")
         data = json.loads(p.read_text(encoding="utf-8"))
-        if data.get("architecture") != "direct-xray-v1":
+        if not isinstance(data, dict) or data.get("architecture") != "direct-xray-v1":
             raise ValueError("state architecture")
         data["uuid"] = canonical_uuid(data["uuid"])
         if (not re.fullmatch(r"v\d+\.\d+\.\d+", data["xray_version"])
@@ -65,7 +66,7 @@ def read_state(path):
             raise ValueError("state version")
         return data
     except (OSError, ValueError, KeyError, TypeError):
-        die("CONFIG_CONFLICT: missing or invalid root-only state")
+        die("CONFIG_CONFLICT: 状态文件缺失、损坏或权限不安全，请检查 root 专用状态文件")
 
 
 def write_state(path, uid, xray_version, deployment_version):
@@ -74,17 +75,27 @@ def write_state(path, uid, xray_version, deployment_version):
     p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     data = {"architecture": "direct-xray-v1", "uuid": uid, "xray_version": xray_version,
             "deployment_version": deployment_version}
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(data, stream)
-        stream.write("\n")
+    fd, temporary = tempfile.mkstemp(prefix=".state-", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name == "nt":
+            os.rename(temporary, p)  # Windows rename also refuses existing targets.
+        else:
+            os.link(temporary, p)  # Atomic, refuses existing targets on Linux.
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def check_state(path, version, deployment_version, supplied_uid=""):
     data = read_state(path)
-    if (data["xray_version"] != version or data["deployment_version"] != deployment_version
+    if (data["xray_version"] != version or data["deployment_version"] not in {"0.1.0-dev", "1.0.0", deployment_version}
             or (supplied_uid and data["uuid"] != canonical_uuid(supplied_uid))):
-        die("CONFIG_CONFLICT: deployed version or UUID differs; no overwrite")
+        die("CONFIG_CONFLICT: Xray 版本、状态格式或 UUID 不兼容，已停止覆盖")
     return data
 
 
@@ -104,18 +115,33 @@ def config_matches(path, uid):
         return False
 
 
-def uri_payload(uid, server=DOMAIN):
-    if server != DOMAIN:
-        try:
-            ipaddress.IPv4Address(server)
-        except ipaddress.AddressValueError:
-            die("--server requires an IPv4 address for the temporary VPS")
+def validate_server(server):
+    if not isinstance(server, str) or not server or len(server) > 253:
+        die("SERVER_INVALID: --server 需要有效 IPv4 或完整域名")
+    try:
+        addr = ipaddress.IPv4Address(server)
+        if not addr.is_global or addr.is_multicast:
+            die("SERVER_INVALID: 请输入 VPS 的公网 IPv4")
+        return str(addr)
+    except ipaddress.AddressValueError:
+        if re.fullmatch(r"[0-9.]+", server) or not re.fullmatch(
+                r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+                r"[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", server):
+            die("SERVER_INVALID: --server 需要有效 IPv4 或完整域名，不要填写协议、路径或端口")
+        return server.lower()
+
+
+def uri_payload(uid, server=None):
+    server = server or public_ip()
+    if server == "UNKNOWN":
+        die("PUBLIC_IP_UNAVAILABLE: 公网 IPv4 获取失败，请使用 --server 指定地址")
+    server = validate_server(server)
     return {"v": "2", "ps": "VPS-DR", "add": server, "port": "443",
             "id": canonical_uuid(uid), "aid": "0", "scy": "auto", "net": "tcp",
             "type": "none", "host": "", "path": "", "tls": "none"}
 
 
-def encode_uri(uid, server=DOMAIN):
+def encode_uri(uid, server=None):
     data = uri_payload(uid, server)
     raw = json.dumps(data, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     uri = "vmess://" + base64.b64encode(raw).decode("ascii")
@@ -148,13 +174,13 @@ def xray_version_ok(version):
 def listener_pid():
     result = run("ss", "-ltnpH", "( sport = :443 )")
     if result.returncode:
-        die("HEALTH_CHECK_FAIL: ss could not inspect TCP 443")
+        die("HEALTH_CHECK_FAIL: 无法检查 TCP 443 监听状态")
     lines = [line for line in result.stdout.splitlines() if re.search(r"(?<!\d):443\s", line)]
     if len(lines) != 1:
-        die("HEALTH_CHECK_FAIL: expected one TCP 443 listener")
+        die("HEALTH_CHECK_FAIL: TCP 443 监听数量异常")
     match = re.search(r"pid=(\d+)", lines[0])
     if not match:
-        die("HEALTH_CHECK_FAIL: TCP 443 owner unavailable")
+        die("HEALTH_CHECK_FAIL: 无法确认 TCP 443 所属进程")
     return int(match.group(1))
 
 
@@ -162,12 +188,15 @@ def public_ip():
     try:
         with urllib.request.urlopen("https://api.ipify.org", timeout=8) as response:
             value = response.read(64).decode().strip()
-        return str(ipaddress.IPv4Address(value))
+        address = ipaddress.IPv4Address(value)
+        return str(address) if address.is_global else "UNKNOWN"
     except (OSError, ValueError):
         return "UNKNOWN"
 
 
 def dns_ips():
+    if not DOMAIN:
+        return []
     try:
         return sorted({item[4][0] for item in socket.getaddrinfo(DOMAIN, None, socket.AF_INET)})
     except OSError:
@@ -178,42 +207,42 @@ def health(path):
     state = read_state(path)
     if not CONFIG.is_file() or CONFIG.is_symlink() or (os.name != "nt" and
                                (CONFIG.stat().st_uid != 0 or CONFIG.stat().st_mode & 0o077)):
-        die("HEALTH_CHECK_FAIL: config permissions or path are unsafe")
+        die("HEALTH_CHECK_FAIL: 配置路径或权限不安全")
     if not XRAY.is_file() or not xray_version_ok(state["xray_version"]):
-        die("HEALTH_CHECK_FAIL: Xray binary missing or version mismatch")
+        die("HEALTH_CHECK_FAIL: Xray 程序不存在或版本不匹配")
     if not config_matches(CONFIG, state["uuid"]):
-        die("HEALTH_CHECK_FAIL: config or UUID differs from root-only state")
+        die("HEALTH_CHECK_FAIL: 配置或 UUID 与本机状态不一致")
     result = run(str(XRAY), "run", "-test", "-config", str(CONFIG))
     if result.returncode:
-        die("HEALTH_CHECK_FAIL: Xray config test failed")
+        die("HEALTH_CHECK_FAIL: Xray 配置校验失败")
     for _ in range(20):
         if (run("systemctl", "is-active", "--quiet", UNIT).returncode == 0
                 and run("ss", "-ltnH", "( sport = :443 )").stdout.strip()):
             break
         time.sleep(1)
     else:
-        die("HEALTH_CHECK_FAIL: xray.service or TCP 443 did not become active")
+        die("HEALTH_CHECK_FAIL: Xray 服务或 TCP 443 未就绪")
     pid = listener_pid()
     service_pid = run("systemctl", "show", "--property=MainPID", "--value", UNIT)
     if service_pid.returncode or service_pid.stdout.strip() != str(pid):
-        die("HEALTH_CHECK_FAIL: TCP 443 does not belong to xray.service")
+        die("HEALTH_CHECK_FAIL: TCP 443 被其他服务占用")
     if os.path.realpath(f"/proc/{pid}/exe") != str(XRAY):
-        die("HEALTH_CHECK_FAIL: TCP 443 owner is not the installed Xray binary")
+        die("HEALTH_CHECK_FAIL: TCP 443 监听程序不是已安装的 Xray")
     try:
         with socket.create_connection(("127.0.0.1", 443), timeout=3):
             pass
     except OSError:
-        die("HEALTH_CHECK_FAIL: localhost TCP 443 unavailable")
+        die("HEALTH_CHECK_FAIL: 本机 TCP 443 无法连接")
     ip, resolved = public_ip(), dns_ips()
     print("=== VPS_DR_HEALTH ===")
     print(f"DEPLOYMENT_VERSION: {state['deployment_version']}")
     print(f"XRAY_VERSION: {state['xray_version']}")
     print("CONFIG_JSON: PASS\nXRAY_CONFIG_TEST: PASS\nSYSTEMD: ACTIVE\nPORT_443: XRAY")
-    print(f"PUBLIC_IP: {ip}\nDOMAIN: {DOMAIN}")
+    print(f"PUBLIC_IP: {ip}\nDOMAIN: {DOMAIN or '未设置（使用 IP）'}")
     print(f"DOMAIN_RESOLVES_TO: {','.join(resolved) if resolved else 'UNKNOWN'}")
-    print(f"DNS_SWITCH_REQUIRED: {'NO' if ip != 'UNKNOWN' and ip in resolved else 'YES'}")
-    if ip == "UNKNOWN" or not resolved:
-        die("HEALTH_CHECK_FAIL: public IP or domain resolution not verified")
+    print("LOCAL_SERVICE: PASS — 本机服务正常。客户端连通性需在客户端实际测试。")
+    if ip == "UNKNOWN" or (DOMAIN and not resolved):
+        print("NETWORK_NOTICE: 公网 IP 或可选域名未能确认；本机服务检查已通过。")
 
 
 def main():
@@ -232,13 +261,15 @@ def main():
         render_config(*args)
     elif action == "config-check":
         if not config_matches(*args):
-            die("CONFIG_CONFLICT: existing Xray config differs")
+            die("CONFIG_CONFLICT: 现有 Xray 配置与状态不一致，已停止覆盖")
     elif action == "health":
         health(args[0])
+    elif action == "validate-server":
+        print(validate_server(args[0]))
     elif action == "public-ip":
         address = public_ip()
         if address == "UNKNOWN":
-            die("PUBLIC_IP_UNAVAILABLE: cannot export a temporary-IP client node")
+            die("PUBLIC_IP_UNAVAILABLE: 无法获取公网 IPv4，请使用 --server 指定地址")
         print(address)
     elif action == "export":
         state = read_state(args[0])
@@ -248,26 +279,30 @@ def main():
             options = options[:-1]
         if len(options) > 1:
             die("Usage: export [SERVER] [--qr]")
-        server = options[0] if options else DOMAIN
+        server = validate_server(options[0]) if options else public_ip()
+        if server == "UNKNOWN":
+            die("公网 IP 获取失败，请使用 --server 指定这台 VPS 的 IPv4 地址。")
         uri = encode_uri(state["uuid"], server)
-        print("CLIENT CONFIGURATION — contains UUID; do not publish")
+        print("客户端配置（含密钥，请勿公开或发送到日志）")
         print(uri)
-        print(f"Protocol: VMess\nAddress: {server}\nPort: 443\nUUID: {state['uuid']}")
-        print("AlterID: 0\nAEAD: enabled\nEncryption: auto\nTransport: tcp / none\nTLS: off\nUDP: client setting")
+        print(f"协议: VMess\n地址: {server}\n端口: 443\nUUID: {state['uuid']}")
+        print("AlterID: 0\nAEAD: 开启\n加密: auto\n传输: tcp / none\nTLS: 关闭\nUDP: 由客户端设置")
         if show_qr:
             print(f"=== PRIVATE VMESS QR: {server}:443 ===", flush=True)
-            print("Scan in Shadowrocket; keep this terminal output private.", flush=True)
+            print("请用 Shadowrocket 扫码导入；请勿公开终端输出。", flush=True)
             try:
                 result = subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", "-o", "-"],
-                                        input=uri, text=True, check=False)
+                                        input=uri, text=True, check=False, timeout=15)
                 available = result.returncode == 0
-            except OSError:
+            except (OSError, subprocess.TimeoutExpired):
                 available = False
             print(f"QR_CODE_DISPLAY: {'PASS' if available else 'UNAVAILABLE'}")
+            if not available:
+                print("二维码不可用，请复制上方 vmess:// 链接导入。")
     elif action == "self-test":
         uid = str(uuid.uuid4())
         assert json.loads(json.dumps(profile(uid))) == profile(uid)
-        assert decode_uri(encode_uri(uid)) == uri_payload(uid)
+        assert decode_uri(encode_uri(uid, "1.2.3.4")) == uri_payload(uid, "1.2.3.4")
         assert decode_uri(encode_uri(uid, "1.2.3.4")) == uri_payload(uid, "1.2.3.4")
         print("LOCAL_TEST: PASS")
     else:
@@ -275,4 +310,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        die(f"OPERATION_FAILED: 系统命令或文件操作失败，请检查依赖、权限及服务日志（{type(exc).__name__}）。")

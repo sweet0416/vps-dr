@@ -1,0 +1,135 @@
+"""Linux root PTY tests against isolated scripts; never touch host service paths."""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+ROOT=Path(__file__).resolve().parents[1]
+
+
+@unittest.skipUnless(os.name == 'posix' and hasattr(os,'geteuid') and os.geteuid()==0 and shutil.which('bash'),
+                     'requires Linux root and Bash; run in isolated CI')
+class MenuTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.source=self.root/'source'
+        shutil.copytree(ROOT,self.source,ignore=shutil.ignore_patterns('.git','__pycache__'))
+        self.bin=self.root/'bin'
+        self.bin.mkdir()
+        self.log=self.root/'actions'
+        self.state=self.root/'state'
+        self.state.mkdir()
+        (self.state/'state.json').write_text('{}')
+        unit=self.root/'units'
+        unit.mkdir()
+        (unit/'xray.service').touch()
+        s=(self.source/'menu.sh').read_text()
+        s=s.replace('/etc/vps-dr',str(self.state)).replace('/etc/systemd/system',str(unit)).replace('/run/lock',str(self.root))
+        (self.source/'menu.sh').write_text(s)
+        for name in ('install.sh','preflight.sh','health-check.sh','export-client.sh'):
+            self.script(self.source/name,f'printf "%s\\n" "{name} $*" >> "$ACTION_LOG"\nexit "${{STUB_STATUS:-0}}"\n')
+        self.script(self.bin/'systemctl','echo "systemctl $*" >> "$ACTION_LOG"\nexit 0\n')
+        self.script(self.bin/'qrencode','exit 0\n')
+        self.script(self.bin/'apt-get','exit 1\n')
+        self.script(self.bin/'python3',f'if [[ "$2" == public-ip ]]; then\n [[ -n "${{TEST_IP:-}}" ]] && echo "$TEST_IP" && exit 0\n exit 1\nfi\nexec "{sys.executable}" "$@"\n')
+        self.env=dict(os.environ,PATH=str(self.bin)+os.pathsep+os.environ['PATH'],ACTION_LOG=str(self.log),TEST_IP='8.8.4.4',SCRIPT=str(self.source/'menu.sh'))
+        self.env.pop('VPS_DR_SERVER',None)
+        self.env.pop('VPS_DR_DOMAIN',None)
+
+    def script(self,path,body):
+        path.write_text('#!/usr/bin/env bash\n'+body)
+        path.chmod(0o755)
+
+    def menu(self,inputs):
+        import pty, select
+        pid,fd=pty.fork()
+        if pid==0:
+            # bootstrap runs menu.sh as a file after consuming piped stdin.
+            os.execve('/bin/bash',['bash',str(self.source/'menu.sh')],self.env)
+        output=b''
+        try:
+            os.write(fd,inputs.encode())
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline:
+                ready,_,_=select.select([fd],[],[],0.2)
+                if ready:
+                    try: chunk=os.read(fd,65536)
+                    except OSError: break
+                    if not chunk: break
+                    output+=chunk
+            else:
+                os.kill(pid,9)
+                self.fail('menu hung')
+        finally:
+            os.close(fd)
+            _,status=os.waitpid(pid,0)
+        return os.waitstatus_to_exitcode(status),output.decode(errors='replace')
+
+    def test_menu_all_branches_and_invalid_choice(self):
+        code,output=self.menu('1\n2\n3\n4\n5\n9\n0\n')
+        self.assertEqual(code,2)
+        log=self.log.read_text()
+        for action in ('install.sh ','export-client.sh --server 8.8.4.4 --qr','health-check.sh','systemctl restart xray.service','install.sh --upgrade-management'):
+            self.assertIn(action,log)
+        self.assertIn('请输入 0、1、2、3、4 或 5',output)
+
+    def test_manual_address_and_qr_install_failure(self):
+        self.env['TEST_IP']=''
+        (self.bin/'qrencode').unlink()
+        # Do not depend on whether the runner happens to have qrencode installed.
+        for command in ('bash','dirname'):
+            (self.bin/command).symlink_to(shutil.which(command))
+        self.env['PATH']=str(self.bin)
+        code,output=self.menu('2\n1.2.3.4\n0\n')
+        self.assertEqual(code,0,output)
+        self.assertIn('QR_TOOL_INSTALL_FAILED',output)
+        self.assertIn('export-client.sh --server 1.2.3.4 --qr',self.log.read_text())
+
+    def test_invalid_address_is_not_exported(self):
+        self.env['TEST_IP']=''
+        code,output=self.menu('2\ninvalid address\n0\n')
+        self.assertNotEqual(code,0)
+        self.assertIn('SERVER_INVALID',output)
+        self.assertFalse(self.log.exists())
+
+    def test_failed_operation_returns_to_menu_and_exit_status(self):
+        self.env['STUB_STATUS']='7'
+        code,output=self.menu('1\n0\n')
+        self.assertEqual(code,7,output)
+        self.assertGreaterEqual(output.count('===== VPS'),2)
+
+    def test_no_tty_fails_without_hanging(self):
+        result=subprocess.run(['/bin/bash',str(self.source/'menu.sh')],stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=self.env,
+                              start_new_session=True,timeout=5,text=True)
+        self.assertEqual(result.returncode,1)
+        self.assertIn('TTY_REQUIRED',result.stderr)
+
+    def test_bootstrap_from_stdin_selects_new_main_or_fixed_release(self):
+        import tarfile
+        package=self.root/'package'
+        package.mkdir()
+        (package/'VERSION').write_text('1.1.0\n')
+        self.script(package/'menu.sh','echo MENU_ENTRY_PASS\n')
+        self.script(package/'install.sh','echo INSTALL_ENTRY_PASS\n')
+        archive=self.root/'package.tar.gz'
+        with tarfile.open(archive,'w:gz') as bundle:
+            bundle.add(package,arcname='vps-dr-test')
+        self.script(self.bin/'curl','echo "$*" >> "$ACTION_LOG"\nwhile (( $# )); do\n if [[ "$1" == -o ]]; then cp "$TEST_ARCHIVE" "$2"; exit; fi\n shift\ndone\nexit 1\n')
+        self.env['TEST_ARCHIVE']=str(archive)
+        for ref,argument,expected in (('main',None,'MENU_ENTRY_PASS'),('v1.1.0','--install','INSTALL_ENTRY_PASS')):
+            self.env['VPS_DR_REF']=ref
+            command=['/bin/bash'] if argument is None else ['/bin/bash','-s','--',argument]
+            result=subprocess.run(command,input=(ROOT/'bootstrap.sh').read_text(),stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,env=self.env,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn(expected,result.stdout)
+        log=self.log.read_text()
+        self.assertIn('refs/heads/main.tar.gz',log)
+        self.assertIn('refs/tags/v1.1.0.tar.gz',log)

@@ -21,10 +21,15 @@ for cmd in curl python3 sha256sum ss systemctl getent df awk grep stat readlink 
 done
 if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then systemd=YES; else block SYSTEMD_REQUIRED; fi
 [[ -d /run/lock ]] || block RUN_LOCK_UNAVAILABLE
+if [[ "${1:-}" == --local ]]; then dns=SKIPPED; network=SKIPPED
+else
 if command -v getent >/dev/null 2>&1 && getent ahostsv4 github.com >/dev/null 2>&1; then dns=YES; else block DNS_UNAVAILABLE; fi
-if command -v getent >/dev/null 2>&1 && getent ahostsv4 "$DOMAIN" >/dev/null 2>&1; then domain_dns=YES; else block DOMAIN_DNS_UNAVAILABLE; fi
+if [[ -n "$DOMAIN" ]]; then
+  if getent ahostsv4 "$DOMAIN" >/dev/null 2>&1; then domain_dns=YES; else domain_dns=UNAVAILABLE_OPTIONAL; fi
+else domain_dns=NOT_CONFIGURED; fi
 if [[ "$arch" == aarch64 ]]; then asset=Xray-linux-arm64-v8a.zip; else asset=Xray-linux-64.zip; fi
 if command -v curl >/dev/null 2>&1 && curl -fsSIL --max-time 12 "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${asset}.dgst" >/dev/null 2>&1; then network=YES; else block NETWORK_UNAVAILABLE; fi
+fi
 if command -v df >/dev/null 2>&1; then disk=$(df -Pm / 2>/dev/null | awk 'NR==2 {print $4}' || true); fi
 [[ "$disk" =~ ^[0-9]+$ ]] && (( disk >= 1024 )) || block DISK_BELOW_1_GIB
 if [[ -r /proc/meminfo ]]; then memory=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo); fi
@@ -81,4 +86,22 @@ fi
 
 printf '=== VPS_DR_PREFLIGHT ===\nOS: %s\nARCH: %s\nROOT: %s\nSYSTEMD: %s\nNETWORK: %s\nDNS: %s\nDOMAIN_DNS: %s\nPORT_443: %s\nPORT_443_OWNER: %s\nEXISTING_XRAY: %s\nEXISTING_CONFIG: %s\nFIREWALL: %s\nDISK: %s MiB available\nMEMORY: %s MiB available\nREADY_TO_INSTALL: %s\nBLOCKERS: %s\n' \
   "$os" "$arch" "$root" "$systemd" "$network" "$dns" "$domain_dns" "$port443" "$owner" "$existing" "$config" "$firewall" "$disk" "$memory" "$ready" "${reasons[*]:-NONE}"
+if [[ "$ready" != YES ]]; then
+  echo '预检未通过，请按下列原因处理后重试：' >&2
+  for reason in "${reasons[@]}"; do
+    case "$reason" in
+      ROOT_REQUIRED) message='请使用 root 用户运行' ;;
+      NETWORK_UNAVAILABLE|DNS_UNAVAILABLE) message='无法连接 GitHub 或解析地址，请检查服务器网络／DNS' ;;
+      PORT_443_CONFLICT) message='443 端口被其他程序占用，不会强行停止它' ;;
+      EXISTING_XRAY_CONFLICT|CONFIG_CONFLICT|PARTIAL_ACTIVE_XRAY) message='现有程序、服务或配置与本项目不一致，已保留，请先核对' ;;
+      CONFIG_PERMISSIONS_UNSAFE) message='节点配置应由 root 所有且权限为 600' ;;
+      SYSTEMD_REQUIRED) message='需要运行 systemd 的服务器环境' ;;
+      UNSUPPORTED_OS|UNSUPPORTED_ARCH) message='当前操作系统或架构不受支持' ;;
+      DISK_BELOW_1_GIB|MEMORY_BELOW_256_MIB) message='可用磁盘至少 1 GiB，可用内存至少 256 MiB' ;;
+      MISSING_*) message='缺少必要命令，请安装对应系统软件包' ;;
+      *) message='运行环境不满足要求，请核对上述检查项' ;;
+    esac
+    printf '%s: %s\n' "$reason" "$message" >&2
+  done
+else echo '预检通过。'; fi
 [[ "$ready" == YES ]]

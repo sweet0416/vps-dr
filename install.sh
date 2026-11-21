@@ -5,36 +5,40 @@ source "$here/config/defaults.env"
 version=$(<"$here/VERSION")
 state="$STATE_DIR/state.json"
 
+if (( $# > 1 )) || [[ "${1:---install}" != --install && "${1:-}" != --preflight && "${1:-}" != --dry-run && "${1:-}" != --upgrade-management ]]; then
+  echo '用法：install.sh [--install|--preflight|--dry-run|--upgrade-management]' >&2
+  exit 2
+fi
 if [[ "${1:-}" == --preflight || "${1:-}" == --dry-run ]]; then
   bash "$here/preflight.sh"
   exit $?
 fi
-bash "$here/preflight.sh" || { echo "PREFLIGHT_BLOCKED: no installation changes made." >&2; exit 1; }
+(( EUID == 0 )) || { echo 'ROOT_REQUIRED: 请使用 root 用户。' >&2; exit 1; }
 exec 9>/run/lock/vps-dr.lock
-flock -n 9 || { echo "INSTALL_IN_PROGRESS: another bootstrap holds the lock." >&2; exit 1; }
+flock -n 9 || { echo 'INSTALL_IN_PROGRESS: 另一个安装或升级正在运行，请稍后重试。' >&2; exit 1; }
+python3 "$here/scripts/manage.py" recover /opt/vps-dr
+if [[ "${1:-}" == --upgrade-management ]]; then
+  [[ -f "$state" ]] || { echo 'STATE_REQUIRED: 尚未安装，请选择菜单 1。' >&2; exit 1; }
+  bash "$here/preflight.sh" --local || exit 1
+  python3 "$here/scripts/manage.py" upgrade "$here" /opt/vps-dr
+  exit 0
+fi
+bash "$here/preflight.sh" || { echo 'PREFLIGHT_BLOCKED: 预检未通过，未执行安装。' >&2; exit 1; }
+python3 "$here/scripts/manage.py" check "$here" /opt/vps-dr
 
 if [[ -f "$state" ]]; then
   python3 "$here/scripts/dr.py" state-check "$state" "$XRAY_VERSION" "$version" "${VMESS_UUID:-}"
   uid=$(python3 "$here/scripts/dr.py" state-uuid "$state")
 else
   uid=${VMESS_UUID:-}
-  if [[ -z "$uid" && -t 2 ]]; then
-    read -r -p 'Existing VMess UUID (blank generates a NEW UUID): ' uid </dev/tty
-  fi
   if [[ -z "$uid" ]]; then
     uid=$(python3 "$here/scripts/dr.py" new-uuid)
-    printf '%s\n' '*** NEW UUID GENERATED ***' '*** EXISTING CLIENT CONFIG WILL NOT MATCH ***' '*** CLIENTS MUST BE UPDATED ***' >&2
+    echo '已为新节点生成 UUID；完成后请导入本次节点配置。' >&2
   fi
   python3 "$here/scripts/dr.py" state-init "$state" "$uid" "$XRAY_VERSION" "$version"
   chmod 700 "$STATE_DIR"
 fi
 
-if [[ -e /opt/vps-dr ]]; then
-  [[ -d /opt/vps-dr && ! -L /opt/vps-dr ]] || { echo "CONFIG_CONFLICT: /opt/vps-dr is not a project directory." >&2; exit 1; }
-  for file in VERSION install.sh preflight.sh health-check.sh export-client.sh uninstall.sh scripts/dr.py config/defaults.env config/xray.service; do
-    cmp -s "$here/$file" "/opt/vps-dr/$file" || { echo "CONFIG_CONFLICT: deployed $file differs or is missing." >&2; exit 1; }
-  done
-fi
 
 case "$(uname -m)" in
   x86_64) asset=Xray-linux-64.zip; expected=$XRAY_SHA256_AMD64; binary_expected=$XRAY_BINARY_SHA256_AMD64 ;;
@@ -50,7 +54,7 @@ curl -fsSL --retry 3 "$base.dgst" -o "$tmp/$asset.dgst"
 actual=$(sha256sum "$tmp/$asset" | awk '{print $1}')
 published=$(awk '$1 == "SHA2-256=" {print $2}' "$tmp/$asset.dgst")
 [[ "$actual" == "$expected" && "$published" == "$expected" ]] || {
-  echo "CHECKSUM_MISMATCH: official archive, .dgst, and pinned SHA-256 must agree." >&2; exit 1;
+  echo "CHECKSUM_MISMATCH: 官方压缩包、摘要与固定 SHA-256 不一致，已停止。" >&2; exit 1;
 }
 python3 - "$tmp/$asset" "$tmp/xray" <<'PY'
 import sys, zipfile
@@ -60,22 +64,22 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
             target.write(chunk)
 PY
 chmod 755 "$tmp/xray"
-[[ "$(sha256sum "$tmp/xray" | awk '{print $1}')" == "$binary_expected" ]] || { echo "CHECKSUM_MISMATCH: extracted Xray binary differs." >&2; exit 1; }
+[[ "$(sha256sum "$tmp/xray" | awk '{print $1}')" == "$binary_expected" ]] || { echo "CHECKSUM_MISMATCH: 解压后的 Xray 二进制校验失败，已停止。" >&2; exit 1; }
 python3 "$here/scripts/dr.py" render "$tmp/config.json" "$uid"
 "$tmp/xray" run -test -config "$tmp/config.json" >/dev/null || { echo "XRAY_CONFIG_TEST_FAIL" >&2; exit 1; }
 
 if [[ -L /usr/local/bin/xray || -L /usr/local/etc/xray/config.json || -L /etc/systemd/system/xray.service ]]; then
-  echo "EXISTING_XRAY_CONFLICT: symlink at managed path." >&2; exit 1
+  echo "EXISTING_XRAY_CONFLICT: 受管路径包含符号链接，已停止。" >&2; exit 1
 fi
 if [[ -e /usr/local/bin/xray ]] && ! cmp -s "$tmp/xray" /usr/local/bin/xray; then
-  echo "EXISTING_XRAY_CONFLICT: binary differs from pinned official asset." >&2; exit 1
+  echo "EXISTING_XRAY_CONFLICT: 现有二进制不是固定官方版本，已保留。" >&2; exit 1
 fi
 if [[ -e /usr/local/etc/xray/config.json ]]; then
-  [[ "$(stat -c '%a %u' /usr/local/etc/xray/config.json)" == '600 0' ]] || { echo "CONFIG_CONFLICT: config permissions are unsafe." >&2; exit 1; }
+  [[ "$(stat -c '%a %u' /usr/local/etc/xray/config.json)" == '600 0' ]] || { echo "CONFIG_CONFLICT: 配置权限不安全，应为 root 所有且权限 600。" >&2; exit 1; }
   python3 "$here/scripts/dr.py" config-check /usr/local/etc/xray/config.json "$uid"
 fi
 if [[ -e /etc/systemd/system/xray.service ]] && ! cmp -s "$here/config/xray.service" /etc/systemd/system/xray.service; then
-  echo "EXISTING_XRAY_CONFLICT: systemd unit differs." >&2; exit 1
+  echo "EXISTING_XRAY_CONFLICT: 现有 systemd 服务文件与本项目不符，已保留。" >&2; exit 1
 fi
 
 if [[ ! -e /usr/local/bin/xray ]]; then install -m 755 "$tmp/xray" /usr/local/bin/xray; fi
@@ -90,6 +94,8 @@ fi
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
   if ! ufw status | grep -Eq '^443/tcp[[:space:]]+ALLOW'; then ufw allow 443/tcp; fi
 fi
+python3 "$here/scripts/manage.py" upgrade "$here" /opt/vps-dr
+
 if systemctl is-active --quiet xray.service; then
   systemctl is-enabled --quiet xray.service || systemctl enable xray.service
   outcome=ALREADY_CONFIGURED
@@ -97,41 +103,32 @@ else
   systemctl enable --now xray.service
   outcome=INSTALL
 fi
-python3 "$here/scripts/dr.py" health "$state"
 
-if [[ ! -e /opt/vps-dr ]]; then
-  stage=$(mktemp -d /opt/.vps-dr.XXXXXX)
-  install -d -m 755 "$stage/scripts" "$stage/config"
-  install -m 755 "$here/"*.sh "$stage/"
-  install -m 755 "$here/scripts/dr.py" "$stage/scripts/"
-  install -m 644 "$here/VERSION" "$stage/"
-  install -m 644 "$here/config/defaults.env" "$here/config/xray.service" "$stage/config/"
-  chmod 755 "$stage"
-  mv -T "$stage" /opt/vps-dr
-  stage=
-fi
+python3 "$here/scripts/dr.py" health "$state"
 echo "$outcome"
-echo "Provider firewall/security group must allow TCP 443. SSH configuration was not changed."
-echo "Production DNS was not changed."
+echo "请在服务商防火墙／安全组放行 TCP 443，然后从客户端测试连接。"
+echo "域名为可选项；本次未修改 DNS。"
 
 if [[ -t 1 ]]; then
-  server=$(python3 "$here/scripts/dr.py" public-ip || true)
+  server=${VPS_DR_SERVER:-$(python3 "$here/scripts/dr.py" public-ip || true)}
   if [[ -n "$server" ]]; then
     if ! command -v qrencode >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
       if ! (apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qrencode >/dev/null); then
-        echo "QR_TOOL_INSTALL_FAILED: Xray is healthy; client URI will still be shown." >&2
+        echo "QR_TOOL_INSTALL_FAILED: 二维码工具安装失败，本机服务正常，仍会显示节点链接。" >&2
       fi
     fi
     if command -v qrencode >/dev/null 2>&1; then
-      bash "$here/export-client.sh" --server "$server" --qr
+      bash "$here/export-client.sh" --server "$server" --qr || echo "CLIENT_EXPORT_FAILED: 节点服务正常，导出失败，请选择菜单 2 重试。" >&2
     else
-      bash "$here/export-client.sh" --server "$server"
+      bash "$here/export-client.sh" --server "$server" || echo "CLIENT_EXPORT_FAILED: 节点服务正常，导出失败，请选择菜单 2 重试。" >&2
       echo "QR_CODE_DISPLAY: UNAVAILABLE"
     fi
   else
-    echo "CLIENT_EXPORT_UNAVAILABLE: Xray is healthy; public IP could not be detected." >&2
+    echo "CLIENT_EXPORT_UNAVAILABLE: 本机服务正常，但公网 IP 获取失败；请返回菜单 2 手动输入。" >&2
     echo "QR_CODE_DISPLAY: UNAVAILABLE"
   fi
 else
-  echo "CLIENT_EXPORT_SKIPPED: terminal output is not interactive."
+  echo "CLIENT_EXPORT_SKIPPED: 当前输出不是交互终端，未显示客户端密钥；请在终端选择菜单 2。"
 fi
+
+printf "\n安装流程完成。中文管理菜单：bash /opt/vps-dr/menu.sh\n"

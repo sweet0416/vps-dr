@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$here/config/defaults.env"
 version=$(<"$here/VERSION")
@@ -14,8 +15,11 @@ if [[ "${1:-}" == --preflight || "${1:-}" == --dry-run ]]; then
   exit $?
 fi
 (( EUID == 0 )) || { echo 'ROOT_REQUIRED: 请使用 root 用户。' >&2; exit 1; }
-exec 9>/run/lock/vps-dr.lock
-flock -n 9 || { echo 'INSTALL_IN_PROGRESS: 另一个安装或升级正在运行，请稍后重试。' >&2; exit 1; }
+if [[ ${VPS_DR_LOCKED:-} != 1 ]] || ! python3 "$here/scripts/locked.py" check; then
+  exec python3 "$here/scripts/locked.py" run bash "$here/install.sh" "$@"
+fi
+python3 "$here/scripts/update.py" recover --lock-held
+python3 "$here/scripts/backup.py" recover --lock-held
 python3 "$here/scripts/manage.py" recover /opt/vps-dr
 python3 "$here/scripts/manage.py" shortcut-check "$here" /usr/local/bin/caidan
 if [[ "${1:-}" == --upgrade-management ]]; then
@@ -23,6 +27,7 @@ if [[ "${1:-}" == --upgrade-management ]]; then
   bash "$here/preflight.sh" --local || exit 1
   python3 "$here/scripts/manage.py" upgrade "$here" /opt/vps-dr
   python3 "$here/scripts/manage.py" shortcut-install "$here" /usr/local/bin/caidan
+  python3 /opt/vps-dr/scripts/traffic.py setup || echo 'TRAFFIC_SETUP_FAILED: 节点管理升级已完成；流量采集未能启用，请按上方提示处理后再次选择 5。' >&2
   exit 0
 fi
 bash "$here/preflight.sh" || { echo 'PREFLIGHT_BLOCKED: 预检未通过，未执行安装。' >&2; exit 1; }
@@ -50,9 +55,13 @@ esac
 tmp=$(mktemp -d)
 stage=
 trap 'rm -rf -- "$tmp"; [[ -z "$stage" ]] || rm -rf -- "$stage"' EXIT
+if [[ -e /usr/local/bin/xray ]]; then
+  python3 "$here/scripts/update.py" installed-binary-check "$state"
+  cp /usr/local/bin/xray "$tmp/xray"
+else
 base="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${asset}"
-curl -fsSL --retry 3 "$base" -o "$tmp/$asset"
-curl -fsSL --retry 3 "$base.dgst" -o "$tmp/$asset.dgst"
+curl -fsSL --connect-timeout 15 --max-time 300 --retry 2 "$base" -o "$tmp/$asset"
+curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 "$base.dgst" -o "$tmp/$asset.dgst"
 actual=$(sha256sum "$tmp/$asset" | awk '{print $1}')
 published=$(awk '$1 == "SHA2-256=" {print $2}' "$tmp/$asset.dgst")
 [[ "$actual" == "$expected" && "$published" == "$expected" ]] || {
@@ -67,6 +76,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
 PY
 chmod 755 "$tmp/xray"
 [[ "$(sha256sum "$tmp/xray" | awk '{print $1}')" == "$binary_expected" ]] || { echo "CHECKSUM_MISMATCH: 解压后的 Xray 二进制校验失败，已停止。" >&2; exit 1; }
+fi
 python3 "$here/scripts/dr.py" render "$tmp/config.json" "$uid"
 "$tmp/xray" run -test -config "$tmp/config.json" >/dev/null || { echo "XRAY_CONFIG_TEST_FAIL" >&2; exit 1; }
 
@@ -74,7 +84,7 @@ if [[ -L /usr/local/bin/xray || -L /usr/local/etc/xray/config.json || -L /etc/sy
   echo "EXISTING_XRAY_CONFLICT: 受管路径包含符号链接，已停止。" >&2; exit 1
 fi
 if [[ -e /usr/local/bin/xray ]] && ! cmp -s "$tmp/xray" /usr/local/bin/xray; then
-  echo "EXISTING_XRAY_CONFLICT: 现有二进制不是固定官方版本，已保留。" >&2; exit 1
+  echo "EXISTING_XRAY_CONFLICT: 现有二进制在检查后发生变化，已保留。" >&2; exit 1
 fi
 if [[ -e /usr/local/etc/xray/config.json ]]; then
   [[ "$(stat -c '%a %u' /usr/local/etc/xray/config.json)" == '600 0' ]] || { echo "CONFIG_CONFLICT: 配置权限不安全，应为 root 所有且权限 600。" >&2; exit 1; }
@@ -98,6 +108,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
 fi
 python3 "$here/scripts/manage.py" upgrade "$here" /opt/vps-dr
 python3 "$here/scripts/manage.py" shortcut-install "$here" /usr/local/bin/caidan
+python3 /opt/vps-dr/scripts/traffic.py setup || echo 'TRAFFIC_SETUP_FAILED: 流量采集暂不可用，节点安装将继续；处理上方提示后再次选择 5 可重试。' >&2
 
 if systemctl is-active --quiet xray.service; then
   systemctl is-enabled --quiet xray.service || systemctl enable xray.service

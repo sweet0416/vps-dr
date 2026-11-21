@@ -14,12 +14,12 @@ fi
 
 repo=sweet0416/vps-dr
 ref=${VPS_DR_REF:-main}
-[[ "$ref" == main || "$ref" == v1.1.0 ]] || { echo "不支持此来源版本，请使用 main 或 v1.1.0。" >&2; exit 1; }
+[[ "$ref" == main || "$ref" == v1.1.0 || "$ref" == v1.2.0 ]] || { echo "不支持此来源版本，请使用 main、v1.1.0 或 v1.2.0。" >&2; exit 1; }
 command -v curl >/dev/null && command -v tar >/dev/null || { echo "需要安装 curl 和 tar。" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 if [[ "$ref" == main ]]; then archive=heads/main; else archive="tags/$ref"; fi
-curl -fsSL --retry 3 "https://github.com/$repo/archive/refs/$archive.tar.gz" -o "$tmp/repo.tar.gz"
+curl -fsSL --connect-timeout 15 --max-time 180 --retry 2 "https://github.com/$repo/archive/refs/$archive.tar.gz" -o "$tmp/repo.tar.gz"
 mkdir "$tmp/source"
 tar -xzf "$tmp/repo.tar.gz" --strip-components=1 -C "$tmp/source"
 [[ -f "$tmp/source/VERSION" ]] || { echo "下载内容缺少 VERSION，请重试。" >&2; exit 1; }

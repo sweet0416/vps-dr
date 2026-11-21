@@ -6,6 +6,7 @@ from io import StringIO
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -79,6 +80,31 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(before, {n:(self.target/n).read_bytes() for n in manage.FILES})
         self.assertEqual(state.read_text(), 'retained private state')
         self.assertFalse(list(self.root.glob('.vps-dr.backup-*')))
+
+    def test_installed_recovery_entries_do_not_create_management_bytecode(self):
+        self.seed()
+        # Run deployed source in fresh interpreters without the launcher's env
+        # override. Missing transaction fixtures guarantee no host service calls.
+        environment = dict(os.environ)
+        environment.pop('PYTHONDONTWRITEBYTECODE', None)
+        for name, args in (('backup', ['recover']), ('update', ['recover']), ('observe', [])):
+            script = self.target / 'scripts' / (name + '.py')
+            code = (
+                'import runpy,sys; from pathlib import Path; '
+                f'sys.path.insert(0,{str(script.parent)!r}); '
+                f'namespace=runpy.run_path({str(script)!r}); '
+                "scope=namespace['main'].__globals__; "
+                f'scope["BACKUPS"]=Path({str(self.root / 'missing-backups')!r}); '
+                f'scope["TRANSACTION"]=Path({str(self.root / 'missing-core-transaction')!r}); '
+                f'sys.argv=[{str(script)!r},*{args!r}]; '
+                + ("namespace['redact']('public diagnostic probe')" if name == 'observe'
+                   else "namespace['main']()")
+            )
+            result = subprocess.run([sys.executable, '-c', code], env=environment,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, f'{name}: {result.stderr}')
+            self.assertFalse(list(self.target.rglob('*.pyc')), name)
+            manage.verify(ROOT, self.target)
 
     def test_known_legacy_domain_repair_upgrade(self):
         self.seed()

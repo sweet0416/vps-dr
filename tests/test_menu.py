@@ -50,7 +50,8 @@ class MenuTests(unittest.TestCase):
         import pty, select
         pid,fd=pty.fork()
         if pid==0:
-            os.execve('/bin/bash',['bash','-c','cat "$SCRIPT" | bash'],self.env)
+            # bootstrap runs menu.sh as a file after consuming piped stdin.
+            os.execve('/bin/bash',['bash',str(self.source/'menu.sh')],self.env)
         output=b''
         try:
             os.write(fd,inputs.encode())
@@ -70,7 +71,7 @@ class MenuTests(unittest.TestCase):
             _,status=os.waitpid(pid,0)
         return os.waitstatus_to_exitcode(status),output.decode(errors='replace')
 
-    def test_pipe_menu_all_branches_and_invalid_choice(self):
+    def test_menu_all_branches_and_invalid_choice(self):
         code,output=self.menu('1\n2\n3\n4\n5\n9\n0\n')
         self.assertEqual(code,2)
         log=self.log.read_text()
@@ -81,8 +82,12 @@ class MenuTests(unittest.TestCase):
     def test_manual_address_and_qr_install_failure(self):
         self.env['TEST_IP']=''
         (self.bin/'qrencode').unlink()
+        # Do not depend on whether the runner happens to have qrencode installed.
+        for command in ('bash','dirname'):
+            (self.bin/command).symlink_to(shutil.which(command))
+        self.env['PATH']=str(self.bin)
         code,output=self.menu('2\n1.2.3.4\n0\n')
-        self.assertEqual(code,0)
+        self.assertEqual(code,0,output)
         self.assertIn('QR_TOOL_INSTALL_FAILED',output)
         self.assertIn('export-client.sh --server 1.2.3.4 --qr',self.log.read_text())
 
@@ -96,7 +101,7 @@ class MenuTests(unittest.TestCase):
     def test_failed_operation_returns_to_menu_and_exit_status(self):
         self.env['STUB_STATUS']='7'
         code,output=self.menu('1\n0\n')
-        self.assertEqual(code,7)
+        self.assertEqual(code,7,output)
         self.assertGreaterEqual(output.count('===== VPS'),2)
 
     def test_no_tty_fails_without_hanging(self):

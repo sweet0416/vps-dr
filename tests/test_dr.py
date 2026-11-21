@@ -52,15 +52,15 @@ class DirectXrayTests(unittest.TestCase):
             dr.read_state(path)
 
     def test_vmess_uri_roundtrip_default_and_temporary_ip(self):
-        for address in (dr.DOMAIN, "1.2.3.4"):
+        for address in ("node.example.com", "1.2.3.4"):
             uri = dr.encode_uri(self.uid, address)
             data = dr.decode_uri(uri)
             self.assertEqual(data, dr.uri_payload(self.uid, address))
             self.assertEqual(data["aid"], "0")
             self.assertEqual(data["scy"], "auto")
             self.assertEqual(data["tls"], "none")
-        with self.assertRaisesRegex(SystemExit, "--server requires"):
-            dr.encode_uri(self.uid, "node.passwallv2ray.top.evil.example")
+        with self.assertRaisesRegex(SystemExit, "SERVER_INVALID"):
+            dr.encode_uri(self.uid, "https://node.example.com/path")
 
     def test_export_uri_and_qr_use_same_client_config(self):
         path = self.root / "state.json"
@@ -72,7 +72,7 @@ class DirectXrayTests(unittest.TestCase):
             dr.main()
         lines = output.getvalue().splitlines()
         uri = next(line for line in lines if line.startswith("vmess://"))
-        self.assertIn("Address: 1.2.3.4", lines)
+        self.assertTrue("地址: 1.2.3.4" in lines)
         self.assertIn("QR_CODE_DISPLAY: PASS", lines)
         self.assertEqual(qrencode.call_args.args[0],
                          ["qrencode", "-t", "ANSIUTF8", "-m", "2", "-o", "-"])
@@ -88,6 +88,56 @@ class DirectXrayTests(unittest.TestCase):
             dr.main()
         self.assertIn("vmess://", output.getvalue())
         self.assertIn("QR_CODE_DISPLAY: UNAVAILABLE", output.getvalue())
+
+    def test_export_defaults_to_detected_ip(self):
+        path = self.root / "state.json"
+        dr.write_state(path, self.uid, "v26.3.27", self.version)
+        with (patch.object(dr, "public_ip", return_value="8.8.4.4"),
+              patch.object(sys, "argv", ["dr.py", "export", str(path)]),
+              redirect_stdout(StringIO()) as output):
+            dr.main()
+        uri = next(line for line in output.getvalue().splitlines() if line.startswith("vmess://"))
+        self.assertEqual(dr.decode_uri(uri)["add"], "8.8.4.4")
+
+    def test_export_unknown_ip_requires_explicit_address(self):
+        path = self.root / "state.json"
+        dr.write_state(path, self.uid, "v26.3.27", self.version)
+        with (patch.object(dr, "public_ip", return_value="UNKNOWN"),
+              patch.object(sys, "argv", ["dr.py", "export", str(path)])):
+            with self.assertRaisesRegex(SystemExit, "--server"):
+                dr.main()
+
+    def test_health_allows_unresolved_legacy_domain(self):
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+        state = self.root / "state.json"
+        config = self.root / "config.json"
+        binary = self.root / "xray"
+        dr.write_state(state, self.uid, "v26.3.27", self.version)
+        dr.render_config(config, self.uid)
+        binary.touch()
+
+        def command(*args):
+            output = "42" if args[1:2] == ("show",) else "LISTEN"
+            return SimpleNamespace(returncode=0, stdout=output)
+
+        safe_config = MagicMock()
+        safe_config.is_file.return_value = True
+        safe_config.is_symlink.return_value = False
+        safe_config.stat.return_value = SimpleNamespace(st_uid=0, st_mode=0o600)
+        with (patch.object(dr, "CONFIG", safe_config), patch.object(dr, "XRAY", binary),
+              patch.object(dr, "config_matches", return_value=True),
+              patch.object(dr, "xray_version_ok", return_value=True),
+              patch.object(dr, "run", side_effect=command),
+              patch.object(dr, "listener_pid", return_value=42),
+              patch.object(dr.os.path, "realpath", return_value=str(binary)),
+              patch.object(dr.socket, "create_connection", return_value=MagicMock()),
+              patch.object(dr, "public_ip", return_value="UNKNOWN"),
+              patch.object(dr, "dns_ips", return_value=[]),
+              redirect_stdout(StringIO()) as output):
+            dr.health(state)
+        self.assertIn("SYSTEMD: ACTIVE", output.getvalue())
+        self.assertIn("NETWORK_NOTICE", output.getvalue())
 
     def test_systemd_unit_checks_config_before_start(self):
         unit = configparser.ConfigParser(interpolation=None)

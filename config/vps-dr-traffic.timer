@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample VPS DR host traffic every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=vps-dr-traffic.service
+
+[Install]
+WantedBy=timers.target

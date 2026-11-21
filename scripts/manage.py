@@ -11,7 +11,8 @@ import tempfile
 
 FILES = ('VERSION', 'bootstrap.sh', 'install.sh', 'preflight.sh', 'menu.sh',
          'health-check.sh', 'export-client.sh', 'uninstall.sh', 'scripts/dr.py',
-         'scripts/manage.py', 'config/defaults.env', 'config/xray.service',
+         'scripts/manage.py', 'scripts/bbr.py', 'scripts/caidan.sh',
+         'config/defaults.env', 'config/xray.service',
          'config/legacy-v1.json')
 
 
@@ -60,6 +61,42 @@ def verify(source, target):
         raise ValueError(f'管理文件有未知修改：{name}，已保留，请先核对')
     if not found:
         raise ValueError('管理目录为空或无法识别，未覆盖')
+
+
+def shortcut(source, target, check_only=False):
+    target = Path(target).absolute()
+    expected = (Path(source) / 'scripts/caidan.sh').read_bytes()
+    for parent in (target.parent, *target.parent.parents):
+        if parent.is_symlink():
+            raise ValueError(f'快捷命令目录包含符号链接：{parent}')
+    if target.parent.exists():
+        meta = target.parent.stat()
+        if os.name != 'nt' and (meta.st_uid != 0 or meta.st_mode & 0o022):
+            raise ValueError('快捷命令目录必须由 root 所有且禁止其他用户写入')
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ValueError(f'快捷命令路径被其他文件或链接占用：{target}')
+    if target.exists():
+        meta = target.stat()
+        if target.read_bytes() != expected or (os.name != 'nt' and
+                                               (meta.st_uid != 0 or meta.st_mode & 0o022)):
+            raise ValueError(f'已有未知来源的 caidan 命令，已保留：{target}')
+        if meta.st_mode & 0o777 == 0o755:
+            return
+    if check_only:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix='.vps-dr-caidan-', dir=target.parent)
+    staged = Path(name)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(expected)
+            stream.flush()
+            os.fsync(stream.fileno())
+        staged.chmod(0o755)
+        os.replace(staged, target)
+    finally:
+        staged.unlink(missing_ok=True)
+    print('CAIDAN_READY: 已配置快捷命令，下次输入 caidan 即可打开中文菜单。')
 
 
 def recover(target):
@@ -140,6 +177,8 @@ if __name__ == '__main__':
             upgrade(sys.argv[2], sys.argv[3])
         elif sys.argv[1] == 'rollback':
             rollback(Path(__file__).resolve().parents[1], sys.argv[2], sys.argv[3])
+        elif sys.argv[1] in ('shortcut-check', 'shortcut-install'):
+            shortcut(sys.argv[2], sys.argv[3], check_only=sys.argv[1] == 'shortcut-check')
         else:
             raise ValueError('未知管理操作')
     except (OSError, ValueError) as exc:

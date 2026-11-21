@@ -6,26 +6,57 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
   echo 'TTY_REQUIRED: 中文菜单需要 SSH 交互终端；自动安装请使用 bootstrap.sh --install。' >&2
   exit 1
 }
-bold='' accent='' reset=''
+bold='' accent='' good='' reset=''
 if [[ -t 1 && -n ${TERM:-} && $TERM != dumb && -z ${NO_COLOR:-} ]]; then
   bold=$'\033[1m'
   accent=$'\033[1;96m'
+  good=$'\033[32m'
   reset=$'\033[0m'
 fi
 
+panel_line() {
+  # Fixed labels use ASCII and Chinese. Each Chinese character occupies two cells.
+  local LC_ALL=C.UTF-8 text=$1 style=${2:-} chinese width
+  chinese=${text//[ -~]/}
+  width=$(( ${#text} + ${#chinese} ))
+  printf '  │  %s%s%s%*s│\n' "$style" "$text" "$reset" "$((46-width))" ''
+}
+
 menu_item() {
-  printf '  %s[%s]%s  %s%s%s\n\n' "$accent" "$1" "$reset" "$bold" "$2" "$reset"
+  local label="[$1]  $2" chinese width LC_ALL=C.UTF-8
+  chinese=${label//[ -~]/}
+  width=$(( ${#label} + ${#chinese} ))
+  printf '  │  %s[%s]%s  %s%*s│\n' "$accent" "$1" "$reset" "$2" "$((46-width))" ''
 }
 
 show_menu() {
-  printf '\n  %sVPS 中文节点管理%s\n\n' "$bold" "$reset"
-  menu_item 1 '一键安装 / 继续安装'
-  menu_item 2 '显示节点链接和二维码'
+  local status='未安装' status_style=$bold
+  if [[ -f /etc/vps-dr/state.json ]]; then
+    status='已安装 / 服务未运行'
+    if ! command -v systemctl >/dev/null 2>&1; then
+      status='服务状态不可用'
+    elif systemctl is-active --quiet xray.service 2>/dev/null; then
+      status='服务运行中'
+      status_style=$good
+    fi
+  fi
+  printf '\n  ┌────────────────────────────────────────────────┐\n'
+  panel_line 'VPS DR    中文节点管理' "$bold"
+  printf '  ├────────────────────────────────────────────────┤\n'
+  panel_line "节点状态  $status" "$status_style"
+  panel_line '节点协议  VMess / TCP 443'
+  printf '  ├────────────────────────────────────────────────┤\n'
+  panel_line ''
+  menu_item 1 '安装 / 继续安装'
+  menu_item 2 '节点链接与二维码'
   menu_item 3 '检查运行状态'
   menu_item 4 '重启节点服务'
-  menu_item 5 '仅升级管理脚本（保留节点）'
-  menu_item 0 '退出'
-  printf '  %s请选择 [0-5]：%s' "$bold" "$reset"
+  menu_item 5 '升级管理脚本'
+  panel_line ''
+  printf '  ├────────────────────────────────────────────────┤\n'
+  panel_line '[0]  退出'
+  printf '  └────────────────────────────────────────────────┘\n'
+  printf '\n  %s请选择 [0-5] > %s' "$bold" "$reset"
 }
 
 show_client() {

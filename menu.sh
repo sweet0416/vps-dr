@@ -6,6 +6,28 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
   echo 'TTY_REQUIRED: 中文菜单需要 SSH 交互终端；自动安装请使用 bootstrap.sh --install。' >&2
   exit 1
 }
+bold='' accent='' reset=''
+if [[ -t 1 && -n ${TERM:-} && $TERM != dumb && -z ${NO_COLOR:-} ]]; then
+  bold=$'\033[1m'
+  accent=$'\033[1;96m'
+  reset=$'\033[0m'
+fi
+
+menu_item() {
+  printf '  %s[%s]%s  %s%s%s\n\n' "$accent" "$1" "$reset" "$bold" "$2" "$reset"
+}
+
+show_menu() {
+  printf '\n  %sVPS 中文节点管理%s\n\n' "$bold" "$reset"
+  menu_item 1 '一键安装 / 继续安装'
+  menu_item 2 '显示节点链接和二维码'
+  menu_item 3 '检查运行状态'
+  menu_item 4 '重启节点服务'
+  menu_item 5 '仅升级管理脚本（保留节点）'
+  menu_item 0 '退出'
+  printf '  %s请选择 [0-5]：%s' "$bold" "$reset"
+}
+
 show_client() {
   local server=${VPS_DR_SERVER:-${VPS_DR_DOMAIN:-}}
   if [[ -z "$server" ]]; then
@@ -36,7 +58,7 @@ restart_node() (
 )
 last_status=0
 while true; do
-  printf '\n===== VPS 中文节点管理 =====\n1. 一键安装 / 继续安装\n2. 显示节点链接和二维码\n3. 检查运行状态\n4. 重启节点服务\n5. 仅升级管理脚本（保留节点及服务）\n0. 退出\n请选择 [0-5]：'
+  show_menu
   read -r choice <&3 || exit "$last_status"
   case "$choice" in
     1)

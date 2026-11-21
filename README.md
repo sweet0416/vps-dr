@@ -8,6 +8,8 @@ curl -fsSL https://raw.githubusercontent.com/sweet0416/vps-dr/main/bootstrap.sh 
 
 菜单提供：1 安装／续装，2 显示节点链接和二维码，3 检查运行状态，4 重启服务，5 仅升级管理脚本，0 退出。每次操作后返回菜单；失败显示原因和退出码。菜单从 /dev/tty 读取选择，支持 curl 管道。
 
+main 入口使用加粗的菜单文字、亮青色编号和分行排版。字体和字号由 SSH 客户端设置。设置非空的 `NO_COLOR` 可关闭样式，简易终端和重定向输出自动使用纯文本。
+
 首次安装默认生成新 UUID，导出当前 VPS 的公网 IPv4。再次执行复用本机 /etc/vps-dr/state.json 中的 UUID，补齐中断安装；不会自动轮换 UUID。域名不再是安装前提。
 
 ## 已有节点

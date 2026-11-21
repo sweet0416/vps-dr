@@ -1,6 +1,7 @@
 """Linux root PTY tests against isolated scripts; never touch host service paths."""
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -46,14 +47,19 @@ class MenuTests(unittest.TestCase):
         path.write_text('#!/usr/bin/env bash\n'+body)
         path.chmod(0o755)
 
-    def menu(self,inputs):
-        import pty, select
+    def menu(self,inputs,stdout_file=None):
+        import pty, select, termios
         pid,fd=pty.fork()
         if pid==0:
             # bootstrap runs menu.sh as a file after consuming piped stdin.
+            if stdout_file is not None:
+                os.dup2(stdout_file.fileno(),1)
             os.execve('/bin/bash',['bash',str(self.source/'menu.sh')],self.env)
         output=b''
         try:
+            settings=termios.tcgetattr(fd)
+            settings[3] &= ~termios.ECHO
+            termios.tcsetattr(fd,termios.TCSANOW,settings)
             os.write(fd,inputs.encode())
             deadline=time.monotonic()+15
             while time.monotonic()<deadline:
@@ -70,6 +76,35 @@ class MenuTests(unittest.TestCase):
             os.close(fd)
             _,status=os.waitpid(pid,0)
         return os.waitstatus_to_exitcode(status),output.decode(errors='replace')
+
+    def test_terminal_styles_and_plain_output(self):
+        self.env['TERM']='xterm-256color'
+        self.env.pop('NO_COLOR',None)
+        code,styled=self.menu('0\n')
+        self.assertEqual(code,0,styled)
+        sgr=re.compile(r'\x1b\[([0-9;]*)m')
+        attributes={part for params in sgr.findall(styled) for part in params.split(';')}
+        self.assertIn('1',attributes)  # Bold text
+        self.assertTrue({'36','96'} & attributes)  # Cyan menu accents
+        self.assertIn('0',attributes)  # Reset before returning to the terminal
+        plain=sgr.sub('',styled)
+        self.assertIn('检查运行状态',plain)
+        for term,no_color in (('xterm-256color','1'),('dumb',''),('','')):
+            with self.subTest(term=term,no_color=no_color):
+                self.env.update(TERM=term,NO_COLOR=no_color)
+                code,output=self.menu('0\n')
+                self.assertEqual(code,0,output)
+                self.assertNotIn('\x1b',output)
+                self.assertEqual(output,plain)
+
+        self.env.update(TERM='xterm-256color',NO_COLOR='')
+        with tempfile.TemporaryFile() as redirected:
+            code,terminal=self.menu('0\n',stdout_file=redirected)
+            self.assertEqual(code,0,terminal)
+            redirected.seek(0)
+            output=redirected.read().decode()
+        self.assertIn('检查运行状态',output)
+        self.assertNotIn('\x1b',output)
 
     def test_menu_all_branches_and_invalid_choice(self):
         code,output=self.menu('1\n2\n3\n4\n5\n9\n0\n')
@@ -102,7 +137,7 @@ class MenuTests(unittest.TestCase):
         self.env['STUB_STATUS']='7'
         code,output=self.menu('1\n0\n')
         self.assertEqual(code,7,output)
-        self.assertGreaterEqual(output.count('===== VPS'),2)
+        self.assertGreaterEqual(output.count('检查运行状态'),2)
 
     def test_no_tty_fails_without_hanging(self):
         result=subprocess.run(['/bin/bash',str(self.source/'menu.sh')],stdin=subprocess.DEVNULL,

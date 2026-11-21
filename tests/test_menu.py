@@ -31,11 +31,21 @@ class MenuTests(unittest.TestCase):
         unit.mkdir()
         (unit/'xray.service').touch()
         s=(self.source/'menu.sh').read_text()
-        s=s.replace('/etc/vps-dr',str(self.state)).replace('/etc/systemd/system',str(unit)).replace('/run/lock',str(self.root))
+        s=s.replace('/etc/vps-dr',str(self.state)).replace('/etc/systemd/system',str(unit)).replace('/run/lock',str(self.root)).replace('/opt/vps-dr',str(self.root/'deployed'))
         (self.source/'menu.sh').write_text(s)
         for name in ('install.sh','preflight.sh','health-check.sh','export-client.sh'):
             self.script(self.source/name,f'printf "%s\\n" "{name} $*" >> "$ACTION_LOG"\nexit "${{STUB_STATUS:-0}}"\n')
-        (self.source/'scripts/bbr.py').write_text("import os,sys\nfrom pathlib import Path\nif sys.argv[1] == 'status':\n print(os.environ.get('TEST_BBR_STATUS','未开启（cubic）'))\nelse:\n with Path(os.environ['ACTION_LOG']).open('a') as f: print('bbr enable',file=f)\n sys.exit(int(os.environ.get('BBR_EXIT','0')))\n")
+        (self.source/'scripts/bbr.py').write_text("import os,sys\nfrom pathlib import Path\nif sys.argv[1] == 'status':\n print(os.environ.get('TEST_BBR_STATUS','未开启（cubic）'))\nelse:\n with Path(os.environ['ACTION_LOG']).open('a') as f: print('bbr '+sys.argv[1],file=f)\n sys.exit(int(os.environ.get('BBR_EXIT','0')))\n")
+        for helper in ('traffic','observe','backup','update','latest'):
+            (self.source/f'scripts/{helper}.py').write_text(
+                "import os,sys\nfrom pathlib import Path\n"
+                "if sys.argv[1]=='recover': sys.exit(0)\n"
+                f"with Path(os.environ['ACTION_LOG']).open('a') as f: print('{helper} '+' '.join(sys.argv[1:]),file=f)\n"
+                "sys.exit(int(os.environ.get('HELPER_EXIT','0')))\n")
+        (self.source/'scripts/locked.py').write_text(
+            "import os,sys\n"
+            "if sys.argv[1]=='check': sys.exit(0)\n"
+            "os.execvpe(sys.argv[2],sys.argv[2:],dict(os.environ,VPS_DR_LOCKED='1'))\n")
         self.script(self.bin/'systemctl','echo "systemctl $*" >> "$ACTION_LOG"\nexit 0\n')
         self.script(self.bin/'qrencode','exit 0\n')
         self.script(self.bin/'apt-get','exit 1\n')
@@ -128,12 +138,39 @@ class MenuTests(unittest.TestCase):
                     self.assertEqual(width,52,line)
 
     def test_menu_all_branches_and_invalid_choice(self):
-        code,output=self.menu('1\n2\n3\n4\n5\n6\n9\n0\n')
+        code,output=self.menu('1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n/private/backup.json\nRESTORE\n12\n1\nYES\n13\n14\nYES\n99\n0\n')
         self.assertEqual(code,2)
         log=self.log.read_text()
-        for action in ('install.sh ','export-client.sh --server 8.8.4.4 --qr','health-check.sh','systemctl restart xray.service','install.sh --upgrade-management','bbr enable'):
+        for action in ('install.sh ','export-client.sh --server 8.8.4.4 --qr','health-check.sh','systemctl restart xray.service','latest management','bbr enable',
+                       'traffic show','observe diagnostics','observe connections','backup backup',
+                       'backup list','backup restore /private/backup.json --confirm','bbr inspect',
+                       'bbr restore','observe logs','update check','update upgrade --confirm'):
             self.assertIn(action,log)
-        self.assertIn('请输入 0、1、2、3、4、5 或 6',output)
+        self.assertIn('请输入 0 到 14',output)
+
+    def test_restore_and_update_cancellation_are_safe(self):
+        code,output=self.menu('11\n\n11\n/tmp/private.json\nNO\n12\n0\n12\n2\nNO\n14\n\n0\n')
+        self.assertEqual(code,0,output)
+        actions=self.log.read_text()
+        self.assertNotIn('backup restore',actions)
+        self.assertNotIn('bbr cubic',actions)
+        self.assertNotIn('update upgrade',actions)
+        self.assertIn('已取消',output)
+
+    def test_extended_failed_operation_returns_and_preserves_status(self):
+        self.env['HELPER_EXIT']='9'
+        for choice in ('5','7','8','9','10','11','13','14'):
+            with self.subTest(choice=choice):
+                code,output=self.menu(choice+'\n0\n')
+                self.assertEqual(code,9,output)
+                self.assertGreaterEqual(output.count('检查运行状态'),2)
+
+    def test_restore_rejects_relative_path_and_cubic_requires_confirmation(self):
+        code,output=self.menu('11\nrelative.json\n12\n2\nYES\n0\n')
+        self.assertEqual(code,0,output)
+        self.assertIn('BACKUP_PATH_INVALID',output)
+        self.assertNotIn('backup restore',self.log.read_text())
+        self.assertIn('bbr cubic',self.log.read_text())
 
     def test_bbr_display_and_failed_enable_return_to_menu(self):
         for state in ('已开启', '未开启（cubic）', '状态不可用'):
@@ -190,7 +227,10 @@ class MenuTests(unittest.TestCase):
             bundle.add(package,arcname='vps-dr-test')
         self.script(self.bin/'curl','echo "$*" >> "$ACTION_LOG"\nwhile (( $# )); do\n if [[ "$1" == -o ]]; then cp "$TEST_ARCHIVE" "$2"; exit; fi\n shift\ndone\nexit 1\n')
         self.env['TEST_ARCHIVE']=str(archive)
-        for ref,argument,expected in (('main',None,'MENU_ENTRY_PASS'),('v1.1.0','--install','INSTALL_ENTRY_PASS')):
+        for ref,argument,expected in (('main',None,'MENU_ENTRY_PASS'),('v1.1.0','--install','INSTALL_ENTRY_PASS'),('v1.2.0',None,'MENU_ENTRY_PASS')):
+            (package/'VERSION').write_text(ref.removeprefix('v')+'\n' if ref!='main' else '1.2.0\n')
+            with tarfile.open(archive,'w:gz') as bundle:
+                bundle.add(package,arcname='vps-dr-test')
             self.env['VPS_DR_REF']=ref
             command=['/bin/bash'] if argument is None else ['/bin/bash','-s','--',argument]
             result=subprocess.run(command,input=(ROOT/'bootstrap.sh').read_text(),stdout=subprocess.PIPE,

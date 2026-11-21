@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import dr  # noqa: E402
+import update
 
 
 class DirectXrayTests(unittest.TestCase):
@@ -125,7 +126,8 @@ class DirectXrayTests(unittest.TestCase):
         safe_config.is_file.return_value = True
         safe_config.is_symlink.return_value = False
         safe_config.stat.return_value = SimpleNamespace(st_uid=0, st_mode=0o600)
-        with (patch.object(dr, "CONFIG", safe_config), patch.object(dr, "XRAY", binary),
+        with (patch.object(update, "verify_installed"),
+              patch.object(dr, "CONFIG", safe_config), patch.object(dr, "XRAY", binary),
               patch.object(dr, "config_matches", return_value=True),
               patch.object(dr, "xray_version_ok", return_value=True),
               patch.object(dr, "run", side_effect=command),
@@ -147,6 +149,15 @@ class DirectXrayTests(unittest.TestCase):
                       unit["Service"]["ExecStartPre"])
         self.assertEqual(unit["Service"]["ExecStart"],
                          "/usr/local/bin/xray run -config /usr/local/etc/xray/config.json")
+
+    def test_health_rejects_untrusted_core_before_execution(self):
+        state = self.root / 'state.json'
+        dr.write_state(state, self.uid, 'v26.3.27', self.version)
+        with patch.object(update, 'verify_installed', side_effect=RuntimeError('digest mismatch')), \
+                patch.object(dr, 'run') as command:
+            with self.assertRaisesRegex(SystemExit, 'HEALTH_CHECK_FAIL'):
+                dr.health(state)
+            command.assert_not_called()
 
 
 if __name__ == "__main__":

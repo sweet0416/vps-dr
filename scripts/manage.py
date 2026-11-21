@@ -12,7 +12,10 @@ import tempfile
 FILES = ('VERSION', 'bootstrap.sh', 'install.sh', 'preflight.sh', 'menu.sh',
          'health-check.sh', 'export-client.sh', 'uninstall.sh', 'scripts/dr.py',
          'scripts/manage.py', 'scripts/bbr.py', 'scripts/caidan.sh',
+         'scripts/traffic.py', 'scripts/backup.py', 'scripts/observe.py',
+         'scripts/latest.py', 'scripts/update.py', 'scripts/locked.py',
          'config/defaults.env', 'config/xray.service',
+         'config/vps-dr-traffic.service', 'config/vps-dr-traffic.timer',
          'config/legacy-v1.json')
 
 

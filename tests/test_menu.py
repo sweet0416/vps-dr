@@ -106,6 +106,26 @@ class MenuTests(unittest.TestCase):
         self.assertIn('检查运行状态',output)
         self.assertNotIn('\x1b',output)
 
+    def test_panel_alignment_and_live_service_status(self):
+        import unicodedata
+        self.env.update(TERM='xterm-256color',NO_COLOR='1')
+        for installed,service_code,expected in ((True,0,'服务运行中'),(True,3,'服务未运行'),(False,0,'未安装')):
+            with self.subTest(installed=installed,service_code=service_code):
+                state_file=self.state/'state.json'
+                if installed:
+                    state_file.write_text('{}')
+                else:
+                    state_file.unlink()
+                self.script(self.bin/'systemctl',f'exit {service_code}\n')
+                code,output=self.menu('0\n')
+                self.assertEqual(code,0,output)
+                self.assertIn(expected,output)
+                lines=[line for line in output.splitlines() if line.startswith('  │')]
+                self.assertGreater(len(lines),6)
+                for line in lines:
+                    width=sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1 for c in line)
+                    self.assertEqual(width,52,line)
+
     def test_menu_all_branches_and_invalid_choice(self):
         code,output=self.menu('1\n2\n3\n4\n5\n9\n0\n')
         self.assertEqual(code,2)
@@ -131,7 +151,7 @@ class MenuTests(unittest.TestCase):
         code,output=self.menu('2\ninvalid address\n0\n')
         self.assertNotEqual(code,0)
         self.assertIn('SERVER_INVALID',output)
-        self.assertFalse(self.log.exists())
+        self.assertNotIn("export-client.sh", self.log.read_text() if self.log.exists() else "")
 
     def test_failed_operation_returns_to_menu_and_exit_status(self):
         self.env['STUB_STATUS']='7'

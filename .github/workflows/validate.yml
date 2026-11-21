@@ -1,0 +1,18 @@
+name: Validate installer
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: for script in *.sh; do bash -n "$script"; done
+      - name: Isolated regressions including root PTY menu
+        run: sudo python3 -m unittest discover -s tests -v
+      - name: Whitespace
+        run: git diff --check HEAD^

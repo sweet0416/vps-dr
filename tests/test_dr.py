@@ -1,6 +1,8 @@
 """Local config, state, and client-link checks; no VPS access."""
 import json
 import configparser
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -51,6 +53,63 @@ class DirectXrayTests(unittest.TestCase):
                                     "deployment_version": self.version}))
         with self.assertRaisesRegex(SystemExit, "CONFIG_CONFLICT"):
             dr.read_state(path)
+
+    def test_ensure_state_preserves_corrupt_state_and_rejects_invalid_supplied_uuid(self):
+        state = self.root / 'state.json'
+        with patch.dict(os.environ, {"VMESS_UUID": "invalid"}):
+            with self.assertRaisesRegex(SystemExit, "CONFIG_CONFLICT"):
+                dr.ensure_state(state, "v26.3.27", self.version)
+        self.assertFalse(state.exists())
+        state.write_text("invalid json")
+        state.chmod(0o600)
+        with self.assertRaisesRegex(SystemExit, "CONFIG_CONFLICT"):
+            dr.ensure_state(state, "v26.3.27", self.version)
+        self.assertEqual(state.read_text(), "invalid json")
+
+    @unittest.skipUnless(os.name == "posix", "Linux installation permissions")
+    def test_publish_does_not_replace_an_existing_destination(self):
+        source, target = self.root / "source", self.root / "target"
+        source.write_bytes(b"verified source")
+        target.write_bytes(b"existing data")
+        with self.assertRaises(FileExistsError):
+            dr.publish_file(source, target, 0o600)
+        self.assertEqual(target.read_bytes(), b"existing data")
+        self.assertEqual(list(self.root.glob(".vps-dr-install-*")), [])
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Linux root fixture")
+    def test_interruption_after_rename_keeps_state_and_config_readable_by_backup(self):
+        import backup
+
+        state, config, source = (self.root / name for name in ("state.json", "config.json", "source"))
+        dr.render_config(source, self.uid)
+        fsync = os.fsync
+
+        def exit_after_rename(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                os._exit(42)  # First instruction after the atomic publication.
+            fsync(fd)
+
+        for destination in (state, config):
+            with self.subTest(path=destination.name):
+                pid = os.fork()
+                if pid == 0:
+                    try:
+                        with patch.object(dr.os, "fsync", side_effect=exit_after_rename):
+                            if destination == state:
+                                dr.write_state(state, self.uid, "v26.3.27", self.version)
+                            else:
+                                dr.publish_file(source, config, 0o600)
+                    finally:
+                        os._exit(1)
+                _, status = os.waitpid(pid, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(status), 42)
+                self.assertEqual(destination.stat().st_nlink, 1)
+                content = json.loads(backup.read_private(destination))
+                if destination == state:
+                    self.assertEqual(content["uuid"], self.uid)
+                else:
+                    self.assertEqual(content, dr.profile(self.uid))
+        self.assertCountEqual(self.root.iterdir(), (state, config, source))
 
     def test_vmess_uri_roundtrip_default_and_temporary_ip(self):
         for address in ("node.example.com", "1.2.3.4"):

@@ -33,28 +33,15 @@ fi
 bash "$here/preflight.sh" || { echo 'PREFLIGHT_BLOCKED: 预检未通过，未执行安装。' >&2; exit 1; }
 python3 "$here/scripts/manage.py" check "$here" /opt/vps-dr
 
-if [[ -f "$state" ]]; then
-  python3 "$here/scripts/dr.py" state-check "$state" "$XRAY_VERSION" "$version" "${VMESS_UUID:-}"
-  uid=$(python3 "$here/scripts/dr.py" state-uuid "$state")
-else
-  uid=${VMESS_UUID:-}
-  if [[ -z "$uid" ]]; then
-    uid=$(python3 "$here/scripts/dr.py" new-uuid)
-    echo '已为新节点生成 UUID；完成后请导入本次节点配置。' >&2
-  fi
-  python3 "$here/scripts/dr.py" state-init "$state" "$uid" "$XRAY_VERSION" "$version"
-  chmod 700 "$STATE_DIR"
-fi
-
-
+python3 "$here/scripts/dr.py" state-ensure "$state" "$XRAY_VERSION" "$version"
+unset VMESS_UUID
 case "$(uname -m)" in
   x86_64) asset=Xray-linux-64.zip; expected=$XRAY_SHA256_AMD64; binary_expected=$XRAY_BINARY_SHA256_AMD64 ;;
   aarch64) asset=Xray-linux-arm64-v8a.zip; expected=$XRAY_SHA256_ARM64; binary_expected=$XRAY_BINARY_SHA256_ARM64 ;;
   *) echo "UNSUPPORTED_ARCH" >&2; exit 1 ;;
 esac
 tmp=$(mktemp -d)
-stage=
-trap 'rm -rf -- "$tmp"; [[ -z "$stage" ]] || rm -rf -- "$stage"' EXIT
+trap 'rm -rf -- "$tmp"' EXIT
 if [[ -e /usr/local/bin/xray ]]; then
   python3 "$here/scripts/update.py" installed-binary-check "$state"
   cp /usr/local/bin/xray "$tmp/xray"
@@ -77,7 +64,7 @@ PY
 chmod 755 "$tmp/xray"
 [[ "$(sha256sum "$tmp/xray" | awk '{print $1}')" == "$binary_expected" ]] || { echo "CHECKSUM_MISMATCH: 解压后的 Xray 二进制校验失败，已停止。" >&2; exit 1; }
 fi
-python3 "$here/scripts/dr.py" render "$tmp/config.json" "$uid"
+python3 "$here/scripts/dr.py" render-from-state "$tmp/config.json" "$state"
 "$tmp/xray" run -test -config "$tmp/config.json" >/dev/null || { echo "XRAY_CONFIG_TEST_FAIL" >&2; exit 1; }
 
 if [[ -L /usr/local/bin/xray || -L /usr/local/etc/xray/config.json || -L /etc/systemd/system/xray.service ]]; then
@@ -88,19 +75,21 @@ if [[ -e /usr/local/bin/xray ]] && ! cmp -s "$tmp/xray" /usr/local/bin/xray; the
 fi
 if [[ -e /usr/local/etc/xray/config.json ]]; then
   [[ "$(stat -c '%a %u' /usr/local/etc/xray/config.json)" == '600 0' ]] || { echo "CONFIG_CONFLICT: 配置权限不安全，应为 root 所有且权限 600。" >&2; exit 1; }
-  python3 "$here/scripts/dr.py" config-check /usr/local/etc/xray/config.json "$uid"
+  python3 "$here/scripts/dr.py" config-check-state /usr/local/etc/xray/config.json "$state"
 fi
 if [[ -e /etc/systemd/system/xray.service ]] && ! cmp -s "$here/config/xray.service" /etc/systemd/system/xray.service; then
   echo "EXISTING_XRAY_CONFLICT: 现有 systemd 服务文件与本项目不符，已保留。" >&2; exit 1
 fi
 
-if [[ ! -e /usr/local/bin/xray ]]; then install -m 755 "$tmp/xray" /usr/local/bin/xray; fi
+if [[ ! -e /usr/local/bin/xray ]]; then
+  python3 "$here/scripts/dr.py" publish-file "$tmp/xray" /usr/local/bin/xray 755
+fi
 if [[ ! -e /usr/local/etc/xray/config.json ]]; then
   install -d -m 700 /usr/local/etc/xray
-  install -m 600 "$tmp/config.json" /usr/local/etc/xray/config.json
+  python3 "$here/scripts/dr.py" publish-file "$tmp/config.json" /usr/local/etc/xray/config.json 600
 fi
 if [[ ! -e /etc/systemd/system/xray.service ]]; then
-  install -m 644 "$here/config/xray.service" /etc/systemd/system/xray.service
+  python3 "$here/scripts/dr.py" publish-file "$here/config/xray.service" /etc/systemd/system/xray.service 644
   systemctl daemon-reload
 fi
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then

@@ -148,6 +148,14 @@ class MenuTests(unittest.TestCase):
             self.assertIn(action,log)
         self.assertIn('请输入 0 到 14',output)
 
+    def test_restart_rejects_changed_effective_unit_before_stopping_service(self):
+        self.env['HELPER_EXIT'] = '9'
+        code, output = self.menu('4\n0\n')
+        self.assertEqual(code, 9, output)
+        actions = self.log.read_text()
+        self.assertIn('update installed-check ' + str(self.state/'state.json'), actions)
+        self.assertNotIn('systemctl restart', actions)
+
     def test_restore_and_update_cancellation_are_safe(self):
         code,output=self.menu('11\n\n11\n/tmp/private.json\nNO\n12\n0\n12\n2\nNO\n14\n\n0\n')
         self.assertEqual(code,0,output)

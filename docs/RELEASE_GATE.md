@@ -5,7 +5,7 @@
 | 验收项目 | 记录结果 | 证据 |
 | --- | --- | --- |
 | STATIC_VALIDATION | PASS | Bash 语法、Python、JSON/配置、单元测试、差异、文档链接与静态路径检查 |
-| REAL_VPS_SERVER_VALIDATION | PASS | 临时 LightNode `38.60.248.15`：Ubuntu 24.04 amd64 安装、Xray v26.3.27 配置测试、systemd active、443 由 Xray 监听、健康检查通过 |
+| REAL_VPS_SERVER_VALIDATION | PASS | 临时 LightNode VPS：Ubuntu 24.04 amd64 安装、Xray v26.3.27 配置测试、systemd active、443 由 Xray 监听、健康检查通过 |
 | SHADOWROCKET_TEST | PASS | 用户确认临时 IP 节点实际连通性正常 |
 | QR_IMPORT_TEST | PASS | 用户确认自动二维码可见、Shadowrocket 扫码导入正常；二维码与 URI 使用同一生成逻辑 |
 | IDEMPOTENCY_TEST | PASS | 实机同配置重跑 `ALREADY_CONFIGURED`，state/config、Xray 二进制和 systemd unit 校验值不变，服务和 443 正常 |

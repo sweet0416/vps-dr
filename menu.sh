@@ -105,6 +105,7 @@ restart_node() (
     echo 'STATE_REQUIRED: 未发现已安装节点，请先选择 1。' >&2; exit 1;
   }
   bash "$here/preflight.sh" --local || exit $?
+  python3 "$here/scripts/update.py" installed-check /etc/vps-dr/state.json || exit $?
   systemctl restart xray.service || { echo 'RESTART_FAILED: 服务重启失败，请查看 systemd 日志。' >&2; exit 1; }
   bash "$here/health-check.sh"
 )

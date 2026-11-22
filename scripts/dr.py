@@ -2,10 +2,13 @@
 """Small, dependency-free config, state, share-link, and health helpers."""
 import base64
 import binascii
+import ctypes
+import errno
 import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -54,8 +57,8 @@ def profile(uid):
 def read_state(path):
     p = Path(path)
     try:
-        if p.is_symlink():
-            raise ValueError("state symlink")
+        if p.is_symlink() or not p.is_file():
+            raise ValueError("state must be a regular file")
         meta = p.stat()
         if os.name != "nt" and os.geteuid() == 0 and (meta.st_uid != 0 or meta.st_mode & 0o077):
             raise ValueError("state permissions")
@@ -71,6 +74,29 @@ def read_state(path):
         die("CONFIG_CONFLICT: 状态文件缺失、损坏或权限不安全，请检查 root 专用状态文件")
 
 
+def commit_new_file(temporary, destination):
+    """Publish a synced sibling file in one rename without replacing any destination."""
+    if os.name == "nt":
+        os.rename(temporary, destination)  # Windows refuses an existing destination.
+        return
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 is required for exclusive publication")
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                          ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    directory = os.open(destination.parent, os.O_DIRECTORY | os.O_RDONLY)
+    try:
+        rename_noreplace = 1  # Linux RENAME_NOREPLACE
+        if renameat2(directory, os.fsencode(Path(temporary).name), directory,
+                     os.fsencode(destination.name), rename_noreplace) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), str(destination))
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def write_state(path, uid, xray_version, deployment_version):
     p = Path(path)
     uid = canonical_uuid(uid)
@@ -84,13 +110,9 @@ def write_state(path, uid, xray_version, deployment_version):
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        if os.name == "nt":
-            os.rename(temporary, p)  # Windows rename also refuses existing targets.
-        else:
-            os.link(temporary, p)  # Atomic, refuses existing targets on Linux.
+        commit_new_file(temporary, p)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        Path(temporary).unlink(missing_ok=True)
 
 
 def check_state(path, version, deployment_version, supplied_uid=""):
@@ -105,6 +127,33 @@ def check_state(path, version, deployment_version, supplied_uid=""):
         except (ImportError, OSError, ValueError, RuntimeError):
             die("CONFIG_CONFLICT: Xray 核心没有匹配的官方升级校验记录，已停止覆盖")
     return data
+
+
+def ensure_state(path, version, deployment_version):
+    path = Path(path)
+    supplied = os.environ.get("VMESS_UUID", "")
+    if path.exists() or path.is_symlink():
+        check_state(path, version, deployment_version, supplied)
+        return
+    write_state(path, supplied or str(uuid.uuid4()), version, deployment_version)
+    path.parent.chmod(0o700)
+    if not supplied:
+        print("已为新节点生成 UUID；完成后请导入本次节点配置。", file=sys.stderr)
+
+
+def publish_file(source, destination, mode):
+    """Publish a complete first-install artifact without replacing existing files."""
+    destination = Path(destination)
+    fd, name = tempfile.mkstemp(prefix=".vps-dr-install-", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as target, open(source, "rb") as stream:
+            shutil.copyfileobj(stream, target)
+            target.flush()
+            os.fchmod(target.fileno(), mode)
+            os.fsync(target.fileno())
+        commit_new_file(name, destination)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def render_config(path, uid):
@@ -183,7 +232,7 @@ def listener_pid():
     result = run("ss", "-ltnpH", "( sport = :443 )")
     if result.returncode:
         die("HEALTH_CHECK_FAIL: 无法检查 TCP 443 监听状态")
-    lines = [line for line in result.stdout.splitlines() if re.search(r"(?<!\d):443\s", line)]
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
     if len(lines) != 1:
         die("HEALTH_CHECK_FAIL: TCP 443 监听数量异常")
     match = re.search(r"pid=(\d+)", lines[0])
@@ -260,7 +309,7 @@ def health(path):
 
 def main():
     if len(sys.argv) < 2:
-        die("Usage: dr.py new-uuid|state-init|state-check|state-uuid|render|config-check|health|public-ip|export|self-test")
+        die("Usage: dr.py new-uuid|state-init|state-check|state-ensure|state-uuid|render|render-from-state|config-check|config-check-state|publish-file|health|public-ip|export|self-test")
     action, *args = sys.argv[1:]
     if action == "new-uuid":
         print(uuid.uuid4())
@@ -268,13 +317,25 @@ def main():
         write_state(*args)
     elif action == "state-check":
         check_state(*args)
+    elif action == "state-ensure":
+        ensure_state(*args)
     elif action == "state-uuid":
         print(read_state(args[0])["uuid"])
     elif action == "render":
         render_config(*args)
-    elif action == "config-check":
-        if not config_matches(*args):
+    elif action == "render-from-state":
+        render_config(args[0], read_state(args[1])["uuid"])
+    elif action in ("config-check", "config-check-state"):
+        uid = read_state(args[1])["uuid"] if action == "config-check-state" else args[1]
+        if not config_matches(args[0], uid):
             die("CONFIG_CONFLICT: 现有 Xray 配置与状态不一致，已停止覆盖")
+    elif action == "publish-file":
+        try:
+            publish_file(args[0], args[1], int(args[2], 8))
+        except FileExistsError:
+            die("EXISTING_XRAY_CONFLICT: 目标文件已存在，已保留。")
+        except OSError as exc:
+            die(f"INSTALL_PUBLISH_FAILED: 无法安装 {args[1]}（{exc.strerror}）")
     elif action == "health":
         health(args[0])
     elif action == "validate-server":

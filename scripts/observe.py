@@ -9,11 +9,10 @@ import sys
 
 sys.dont_write_bytecode = True
 import dr
+import update
 
 STATE = Path('/etc/vps-dr/state.json')
 PROC = Path('/proc')
-UNIT_PATH = Path('/etc/systemd/system/xray.service')
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def redact(text):
@@ -65,32 +64,25 @@ def config_status():
 
 def unit_status():
     try:
-        meta = UNIT_PATH.lstat()
-        if (UNIT_PATH.is_symlink() or not UNIT_PATH.is_file()
-                or os.name != 'nt' and (meta.st_uid != 0 or meta.st_mode & 0o022)):
-            return False
-        if UNIT_PATH.read_bytes() != (ROOT / 'config/xray.service').read_bytes():
-            return False
-        for base in ('/etc/systemd/system', '/run/systemd/system'):
-            dropin = Path(base) / (dr.UNIT + '.d')
-            if dropin.exists() or dropin.is_symlink():
-                return False
-        return True
-    except OSError:
+        update.verify_unit()
+    except (OSError, RuntimeError):
         return False
+    return True
 
 
 def firewall():
     print('\n防火墙检查')
     ufw = command('ufw', 'status')
+    ufw_active = False
     if ufw.returncode == 0:
         lines = ufw.stdout.splitlines()
-        print('  UFW：' + ('已启用' if any(line.strip() == 'Status: active' for line in lines)
+        ufw_active = any(line.strip() == 'Status: active' for line in lines)
+        print('  UFW：' + ('已启用' if ufw_active
                               else '未启用' if any(line.strip() == 'Status: inactive' for line in lines)
                               else '状态无法确认'))
         for line in [line for line in lines if re.search(r'(?<!\d)443(?:/tcp)?(?!\d)', line)][:12]:
             print('  ' + redact(line)[:240])
-    else:
+    if not ufw_active:
         nft = command('nft', 'list', 'ruleset')
         if nft.returncode == 0:
             print('  nftables：' + ('存在规则' if nft.stdout.strip() else '未读取到规则'))

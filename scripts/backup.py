@@ -203,7 +203,7 @@ def local_health():
     pid = run('systemctl', 'show', '--property=MainPID', '--value', UNIT)
     for attempt in range(20):
         listeners = run('ss', '-ltnpH', '( sport = :443 )')
-        lines = [line for line in listeners.stdout.splitlines() if re.search(r'(?<!\d):443\s', line)]
+        lines = [line for line in listeners.stdout.splitlines() if line.strip()]
         if listeners.returncode or lines or attempt == 19:
             break
         time.sleep(0.5)

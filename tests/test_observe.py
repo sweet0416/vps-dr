@@ -73,6 +73,20 @@ class ObservationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertNotIn(secret, text)
 
+    def test_unit_status_checks_effective_fragment_and_dropins(self):
+        with tempfile.TemporaryDirectory() as temp:
+            unit = Path(temp) / 'xray.service'
+            unit.write_bytes((observe.update.ROOT / 'config/xray.service').read_bytes())
+            for fragment, dropins, expected in (
+                (str(unit), '', True),
+                ('/run/systemd/transient/xray.service', '', False),
+                (str(unit), '/usr/lib/systemd/system/xray.service.d/override.conf', False),
+            ):
+                with (self.subTest(fragment=fragment, dropins=dropins),
+                      patch.object(observe.update, 'UNIT_FILE', unit),
+                      patch.object(observe.update, 'checked', side_effect=(fragment, dropins))):
+                    self.assertEqual(observe.unit_status(), expected)
+
     def test_connections_counts_tcp_streams_and_explains_scope(self):
         with (patch.object(observe, 'command', return_value=result('0 0 local remote\n0 0 local remote\n')) as command,
               patch.object(observe, 'main_pid', return_value=42),
@@ -141,11 +155,22 @@ class ObservationTests(unittest.TestCase):
         self.assertIn('累计 CPU 时间：3.0 秒', text)
 
     def test_firewall_inspection_does_not_claim_cloud_security_group_open(self):
-        with patch.object(observe, 'command', return_value=result('Status: active\n443/tcp ALLOW Anywhere\n')):
+        with patch.object(observe, 'command', return_value=result('Status: active\n443/tcp ALLOW Anywhere\n')) as command:
             _, text = self.capture(observe.firewall)
+        command.assert_called_once_with('ufw', 'status')
         self.assertIn('UFW：已启用', text)
         self.assertIn('云安全组', text)
         self.assertIn('仍需外部验证', text)
+
+    def test_inactive_or_unknown_ufw_still_shows_nftables(self):
+        for ufw, display in (('Status: inactive\n', '未启用'), ('unknown\n', '状态无法确认')):
+            with (self.subTest(ufw=ufw),
+                  patch.object(observe, 'command', side_effect=(
+                      result(ufw), result('tcp dport 443 drop\n'))) as command):
+                _, text = self.capture(observe.firewall)
+            command.assert_any_call('nft', 'list', 'ruleset')
+            self.assertIn('UFW：' + display, text)
+            self.assertIn('tcp dport 443 drop', text)
 
 
 if __name__ == '__main__':

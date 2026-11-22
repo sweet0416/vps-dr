@@ -37,7 +37,7 @@ class CoreUpdateTests(unittest.TestCase):
         dr.render_config(self.config, self.uid)
         self.unit = self.root / 'xray.service'
         self.unit.write_bytes((update.ROOT / 'config/xray.service').read_bytes())
-        self.active = True
+        self.service_state = 'active'
         self.commands = []
         self.known = {'XRAY_VERSION': 'v26.3.27', 'XRAY_SHA256_AMD64': '1' * 64,
                       'XRAY_BINARY_SHA256_AMD64': update.sha(self.binary)}
@@ -73,12 +73,14 @@ class CoreUpdateTests(unittest.TestCase):
             output = str(self.unit)
         elif '--property=DropInPaths' in args:
             output = ''
+        elif '--property=ActiveState' in args:
+            output = self.service_state
         elif args[:2] == ('systemctl', 'is-active'):
-            code = 0 if self.active else 3
+            code = 0 if self.service_state == 'active' else 3
         elif args[:2] == ('systemctl', 'restart'):
-            self.active = True
+            self.service_state = 'active'
         elif args[:2] == ('systemctl', 'stop'):
-            self.active = False
+            self.service_state = 'inactive'
         return subprocess.CompletedProcess(args, code, output, '')
 
     def replacement(self):
@@ -127,12 +129,71 @@ class CoreUpdateTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), config)
         self.assertEqual(update.verify_installed(self.state)['binary_sha256'], update.sha(self.binary))
         self.assertFalse(self.transaction.exists())
-        self.assertTrue(self.active)
+        self.assertEqual(self.service_state, 'active')
 
     def test_stopped_service_stays_stopped(self):
-        self.active = False
+        self.service_state = 'inactive'
         self.do_upgrade()
-        self.assertFalse(self.active)
+        self.assertEqual(self.service_state, 'inactive')
+        self.assertNotIn(('systemctl', 'restart', update.UNIT), self.commands)
+
+    def test_failed_or_transitional_service_blocks_download(self):
+        with (patch.object(update, 'latest', return_value=('v26.11.9', {}, {})),
+              patch.object(update, 'package') as download):
+            for status in ('failed', 'activating', 'deactivating', 'reloading'):
+                with self.subTest(status=status):
+                    self.service_state = status
+                    with self.assertRaisesRegex(RuntimeError, 'CORE_SERVICE_UNHEALTHY'):
+                        update.upgrade()
+                    self.assertEqual(self.service_state, status)
+        download.assert_not_called()
+        self.assertFalse(self.transaction.exists())
+
+    def test_state_change_during_download_preserves_service_and_files(self):
+        before = self.state.read_bytes()
+        for initial, after, error in [('inactive', 'active', 'CORE_CHANGED_DURING_DOWNLOAD'),
+                                      ('active', 'inactive', 'CORE_CHANGED_DURING_DOWNLOAD'),
+                                      ('active', 'failed', 'CORE_SERVICE_UNHEALTHY')]:
+            with self.subTest(initial=initial, after=after):
+                self.service_state = initial
+                self.commands.clear()
+
+                def download(*args):
+                    self.service_state = after
+                    return self.replacement()
+
+                with (patch.object(update, 'latest', return_value=('v26.11.9', {}, {})),
+                      patch.object(update, 'package', side_effect=download),
+                      patch.object(update, 'local_health')):
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        update.upgrade()
+                self.assertEqual(self.service_state, after)
+                self.assertNotIn(('systemctl', 'restart', update.UNIT), self.commands)
+                self.assertNotIn(('systemctl', 'stop', update.UNIT), self.commands)
+                self.assertEqual(self.binary.read_bytes(), b'old-official-core')
+                self.assertEqual(self.state.read_bytes(), before)
+                self.assertFalse(self.trust.exists())
+                self.assertFalse(self.transaction.exists())
+
+    def test_transaction_parent_sync_failure_prevents_switch(self):
+        sync_dir = update.sync_dir
+        before = self.state.read_bytes()
+
+        def fail_parent_sync(path):
+            if path == self.transaction.parent:
+                raise OSError('cannot sync transaction parent')
+            sync_dir(path)
+
+        with patch.object(update, 'sync_dir', side_effect=fail_parent_sync):
+            with self.assertRaisesRegex(OSError, 'cannot sync transaction parent'):
+                self.do_upgrade()
+        self.assertEqual(self.binary.read_bytes(), b'old-official-core')
+        self.assertEqual(self.state.read_bytes(), before)
+        self.assertFalse(self.trust.exists())
+        self.assertTrue(self.transaction.is_dir())
+        self.assertFalse((self.transaction / 'journal.json').exists())
+        self.assertTrue(update.recover())
+        self.assertFalse(self.transaction.exists())
         self.assertNotIn(('systemctl', 'restart', update.UNIT), self.commands)
 
     def test_health_failure_rolls_back_state_core_and_trust(self):
@@ -152,7 +213,7 @@ class CoreUpdateTests(unittest.TestCase):
         self.assertEqual(self.binary.read_bytes(), b'old-official-core')
         self.assertFalse(self.trust.exists())
         self.assertFalse(self.transaction.exists())
-        self.assertTrue(self.active)
+        self.assertEqual(self.service_state, 'active')
 
     def test_commit_write_failure_restores_old_binary_and_records(self):
         writer = update.atomic

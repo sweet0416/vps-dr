@@ -133,6 +133,9 @@ def load_original():
                     or item['content'] != expected or type(item['mode']) is not int
                     or not 0 <= item['mode'] <= 0o777 or item['mode'] & 0o022):
                 raise ValueError('snapshot')
+        # Older records used null whenever the runtime already used BBR.
+        if state['algorithm'] is None and state['config'] is None and state['modules'] is None:
+            state['algorithm'] = 'bbr'
         return state
     except (ValueError, TypeError, UnicodeError) as exc:
         raise RuntimeError('BBR_HISTORY_INVALID: BBR 原设置记录损坏或来源无法验证，已保留，请人工核对。') from exc
@@ -246,8 +249,9 @@ def enable():
     original = load_original()
     created = original is None
     if created:
-        # A legacy BBR installation cannot tell us the pre-BBR algorithm.
-        original = {'schema': 1, 'algorithm': before if before != 'bbr' else None,
+        # Only an existing project setting makes the pre-BBR algorithm unknown.
+        legacy_bbr = before == 'bbr' and any(item is not None for item in previous.values())
+        original = {'schema': 1, 'algorithm': None if legacy_bbr else before,
                     'config': previous[CONFIG], 'modules': previous[MODULES]}
         save_original(original)
     try:

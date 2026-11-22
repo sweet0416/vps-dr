@@ -216,6 +216,30 @@ class BbrTests(unittest.TestCase):
         self.assertEqual(self.modules.stat().st_mode & 0o777, 0o400)
         self.assertFalse(self.original.exists())
 
+    def test_restore_preexisting_system_bbr(self):
+        self.current = 'bbr'
+        other = self.config.parent / '10-image.conf'
+        other.write_text(bbr.KEY + '=bbr\n')
+        bbr.enable()
+        self.assertEqual(json.loads(self.original.read_bytes())['algorithm'], 'bbr')
+        bbr.restore()
+        self.assertEqual(self.current, 'bbr')
+        self.assertFalse(self.config.exists())
+        self.assertFalse(self.modules.exists())
+        self.assertFalse(self.original.exists())
+        self.assertEqual(other.read_text(), bbr.KEY + '=bbr\n')
+
+    def test_restore_native_bbr_from_previous_release_record(self):
+        self.current = 'bbr'
+        bbr.save_original({'schema': 1, 'algorithm': None, 'config': None, 'modules': None})
+        self.config.write_text(bbr.SETTINGS)
+        self.modules.write_text(bbr.LOAD_MODULE)
+        bbr.restore()
+        self.assertEqual(self.current, 'bbr')
+        self.assertFalse(self.config.exists())
+        self.assertFalse(self.modules.exists())
+        self.assertFalse(self.original.exists())
+
     def test_old_bbr_has_no_invented_original_algorithm(self):
         self.current = 'bbr'
         self.config.write_text(bbr.SETTINGS)

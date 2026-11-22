@@ -79,6 +79,8 @@ def secure_dir(path):
             raise RuntimeError(f'CORE_PATH_UNSAFE: 目录包含符号链接：{parent}')
     if not path.exists():
         path.mkdir(mode=0o700)
+        # Persist the new name in its parent before any journal can guard a core switch.
+        sync_dir(path.parent)
     meta = path.stat()
     if not path.is_dir() or meta.st_uid != 0 or meta.st_mode & 0o077:
         raise RuntimeError(f'CORE_PATH_UNSAFE: 目录必须由 root 专用：{path}')
@@ -295,6 +297,13 @@ def local_health():
     raise RuntimeError('HEALTH_CHECK_FAIL: 新核心未通过本机服务、进程及 TCP 443 检查。')
 
 
+def service_active():
+    state = checked('systemctl', 'show', '--property=ActiveState', '--value', UNIT)
+    if state not in ('active', 'inactive'):
+        raise RuntimeError('CORE_SERVICE_UNHEALTHY: 服务处于故障或过渡状态，请先检查 Xray 运行状态。')
+    return state == 'active'
+
+
 @contextmanager
 def locked():
     if os.geteuid() != 0:
@@ -422,7 +431,7 @@ def upgrade():
         if version_tuple(version) <= version_tuple(old['version']):
             print(f'CORE_CURRENT: 当前核心 {old["version"]}，官方稳定版 {version}，无需升级。')
             return
-        active = command('systemctl', 'is-active', '--quiet', UNIT).returncode == 0
+        active = service_active()
         if active:
             local_health()
         else:
@@ -442,6 +451,13 @@ def upgrade():
             previous_trust = read_json(TRUST) if TRUST.exists() else None
             journal = {'schema': 1, 'old': old, 'new': trusted, 'active': active,
                        'state': state, 'trust': previous_trust}
+            # An operator or systemd can change service state outside the project lock.
+            try:
+                if service_active() != active:
+                    raise RuntimeError('CORE_CHANGED_DURING_DOWNLOAD: 服务运行状态已变化，已停止升级。')
+            except RuntimeError:
+                finish_transaction()  # Discard preparation without touching the live service.
+                raise
             atomic(TRANSACTION / 'journal.json', encode(journal))
             try:
                 atomic(XRAY, binary.read_bytes(), 0o755)

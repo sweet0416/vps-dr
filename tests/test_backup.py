@@ -19,6 +19,39 @@ import backup
 import dr
 
 
+class ListenerTests(unittest.TestCase):
+    def check_backup_listener(self, output):
+        def respond(*args):
+            if args == ('systemctl', 'show', '--property=MainPID', '--value', backup.UNIT):
+                return subprocess.CompletedProcess(args, 0, '42\n', '')
+            self.assertEqual(args, ('ss', '-ltnpH', '( sport = :443 )'))
+            return subprocess.CompletedProcess(args, 0, output, '')
+
+        with patch.object(backup, 'config_test'), patch.object(backup, 'run', side_effect=respond), \
+                patch.object(os.path, 'realpath', return_value=str(backup.BINARY)), \
+                patch.object(backup.socket, 'create_connection') as connect:
+            backup.local_health()
+            connect.assert_called_once_with(('127.0.0.1', 443), timeout=3)
+
+    def test_ipv4_ipv6_and_wildcard_listeners(self):
+        for address in ('0.0.0.0:443', '[::]:443', '*:443'):
+            output = f'LISTEN 0 512 {address} *:* users:(("xray",pid=42,fd=3))\n'
+            with self.subTest(address=address):
+                with patch.object(dr, 'run', return_value=subprocess.CompletedProcess([], 0, output, '')):
+                    self.assertEqual(dr.listener_pid(), 42)
+                self.check_backup_listener(output)
+
+    def test_competing_or_foreign_listeners_are_rejected(self):
+        foreign = 'LISTEN 0 512 0.0.0.0:443 *:* users:(("other",pid=23,fd=3))\n'
+        duplicate = foreign + 'LISTEN 0 512 [::]:443 *:* users:(("xray",pid=42,fd=3))\n'
+        with patch.object(dr, 'run', return_value=subprocess.CompletedProcess([], 0, duplicate, '')):
+            with self.assertRaisesRegex(SystemExit, 'HEALTH_CHECK_FAIL'):
+                dr.listener_pid()
+        for output in (foreign, duplicate):
+            with self.subTest(output=output), self.assertRaisesRegex(RuntimeError, 'BACKUP_SERVICE_UNHEALTHY'):
+                self.check_backup_listener(output)
+
+
 class BackupTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

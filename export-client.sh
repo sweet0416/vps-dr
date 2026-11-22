@@ -2,8 +2,7 @@
 set -Eeuo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 (( EUID == 0 )) || { echo "请使用 root 用户运行。" >&2; exit 1; }
-uid=$(python3 "$here/scripts/dr.py" state-uuid /etc/vps-dr/state.json)
-python3 "$here/scripts/dr.py" config-check /usr/local/etc/xray/config.json "$uid"
+python3 "$here/scripts/dr.py" config-check-state /usr/local/etc/xray/config.json /etc/vps-dr/state.json
 if (( $# == 0 )); then
   exec python3 "$here/scripts/dr.py" export /etc/vps-dr/state.json
 elif (( $# == 1 )) && [[ "$1" == --qr ]]; then

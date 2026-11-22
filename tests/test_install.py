@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,7 +88,7 @@ class InstallFlowTests(unittest.TestCase):
                         TEST_ARCHIVE=str(self.archive), TEST_DIGEST=str(self.digest),
                         TEST_REAL_PYTHON=sys.executable, PYTHONDONTWRITEBYTECODE='1')
         for key in ('VPS_DR_LOCKED', 'VMESS_UUID', 'VPS_DR_SERVER', 'VPS_DR_DOMAIN',
-                    'FAIL_INSTALL_CONFIG', 'TRAFFIC_STATUS'):
+                    'INTERRUPT_PUBLISH', 'TRAFFIC_STATUS'):
             self.env.pop(key, None)
         self.make_tools()
 
@@ -158,10 +159,6 @@ if [[ "${2:-}" == "$TEST_ROOT/proc/42/exe" ]]; then echo "$TEST_BINARY"; else ex
 for value in "$@"; do
   if [[ "$value" == /* && "$value" != "$TEST_ROOT/"* ]]; then exit 90; fi
 done
-if [[ "${FAIL_INSTALL_CONFIG:-0}" == 1 && "${!#}" == "$TEST_ROOT/usr/local/etc/xray/config.json" ]]; then
-  echo 'simulated config install failure' >&2
-  exit 42
-fi
 exec /usr/bin/install "$@"
 ''')
         # Only health/socket and timer operations are replaced; state, UUID,
@@ -170,6 +167,19 @@ exec /usr/bin/install "$@"
         wrapper.write_text('#!' + sys.executable + '\n' + '''
 import os, pathlib, sys
 args = sys.argv[1:]
+with open(os.environ['ACTION_LOG'], 'a') as output:
+    output.write('python3 ' + ' '.join(args) + '\\n')
+if (len(args) == 5 and args[1] == 'publish-file' and
+        args[3] == os.environ.get('INTERRUPT_PUBLISH')):
+    sys.path.insert(0, str(pathlib.Path(args[0]).parent))
+    import dr
+    def interrupt_copy(source, destination):
+        destination.write(source.read(8))
+        destination.flush()
+        os._exit(42)
+    dr.shutil.copyfileobj = interrupt_copy
+    sys.argv = args
+    dr.main()
 if args and pathlib.Path(args[0]).name == 'traffic.py' and args[1:] == ['setup']:
     with open(os.environ['ACTION_LOG'], 'a') as output: output.write('traffic setup\\n')
     sys.exit(int(os.environ.get('TRAFFIC_STATUS', '0')))
@@ -225,24 +235,48 @@ os.execv(os.environ['TEST_REAL_PYTHON'], [os.environ['TEST_REAL_PYTHON'], *args]
         self.assertEqual(self.assert_profile_consistent(), before)
         self.assertEqual(len(self.downloads()), 2)
 
-    def test_resume_after_binary_written_before_config_and_unit(self):
-        self.env['FAIL_INSTALL_CONFIG'] = '1'
-        interrupted = self.run_install()
-        self.assertEqual(interrupted.returncode, 42, interrupted.stdout + interrupted.stderr)
-        self.assertTrue(self.state.is_file())
-        uid = json.loads(self.state.read_text())['uuid']
-        self.assertTrue(self.binary.is_file())
-        self.assertFalse(self.config.exists())
-        self.assertFalse(self.unit.exists())
-        self.assertFalse(self.active.exists())
-        self.assertEqual(len(self.downloads()), 2)
-        self.env.pop('FAIL_INSTALL_CONFIG')
+    def test_resume_after_interrupted_binary_config_and_unit_copies(self):
+        uid = None
+        for path in (self.binary, self.config, self.unit):
+            with self.subTest(path=path):
+                self.env['INTERRUPT_PUBLISH'] = str(path)
+                interrupted = self.run_install()
+                self.assertEqual(interrupted.returncode, 42, interrupted.stdout + interrupted.stderr)
+                self.assertFalse(path.exists())
+                partial, = path.parent.glob('.vps-dr-install-*')
+                self.assertEqual(partial.stat().st_size, 8)
+                self.assertEqual(partial.stat().st_mode & 0o777, 0o600)
+                if uid is None:
+                    uid = json.loads(self.state.read_text())['uuid']
+                self.assertEqual(json.loads(self.state.read_text())['uuid'], uid)
+                self.assertFalse(self.active.exists())
+        self.env.pop('INTERRUPT_PUBLISH')
+        downloads = len(self.downloads())
         resumed = self.run_install()
         self.assert_success(resumed)
         self.assertEqual(self.assert_profile_consistent()['uuid'], uid)
         self.assertTrue(self.unit.is_file())
         self.assertTrue(self.active.is_file())
-        self.assertEqual(len(self.downloads()), 2)
+        self.assertEqual(len(self.downloads()), downloads)
+
+    def test_supplied_uuid_stays_out_of_commands_and_conflicting_resume_is_rejected(self):
+        supplied = str(uuid.uuid4())
+        self.env['VMESS_UUID'] = supplied
+        self.assert_success(self.run_install())
+        self.assert_success(self.run_install())
+        self.assertEqual(self.assert_profile_consistent()['uuid'], supplied)
+        exported = subprocess.run(['bash', str(self.source / 'export-client.sh'), '--server', '1.2.3.4'],
+                                  text=True, capture_output=True, env=self.env, timeout=10)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertIn(supplied, exported.stdout)
+        self.assertNotIn(supplied, self.actions())
+        conflicting = str(uuid.uuid4())
+        self.env['VMESS_UUID'] = conflicting
+        refused = self.run_install()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('CONFIG_CONFLICT', refused.stderr)
+        self.assertEqual(self.assert_profile_consistent()['uuid'], supplied)
+        self.assertNotIn(conflicting, refused.stdout + refused.stderr + self.actions())
 
     def test_upgraded_official_core_is_reused_without_download_or_downgrade(self):
         self.assert_success(self.run_install())

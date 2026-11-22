@@ -1,6 +1,6 @@
 # 临时 LightNode VPS 测试计划
 
-状态：`REAL_VPS_VALIDATION=PASS`（V1 必需范围）。用户创建的临时 LightNode `38.60.248.15` 已使用提交 `3bdc0719d3965824f2a02eea3c6757eda5a0f2d9` 完成初次安装、重启后健康检查和同配置重跑；随后仅将工具文件更新至 `ef5cb95e4522367a88387ec801a74ac6a144d1c7`，再次得到 `ALREADY_CONFIGURED`、`QR_CODE_DISPLAY: PASS`、运行文件校验值不变、Xray active 和 443 正常。用户确认 Shadowrocket 自动二维码导入及实际连通性正常。`PRIMARY_CLIENT_VALIDATION=Shadowrocket`；`PASSWALL_TEST=NOT_TESTED`，兼容性未实机验证，不属于 V1 发布阻塞。全程保持 `node.passwallv2ray.top → 38.54.95.213`；不访问生产 VPS、不修改 Cloudflare。
+状态：`REAL_VPS_VALIDATION=PASS`（V1 必需范围）。用户创建的临时 LightNode VPS 已使用提交 `3bdc0719d3965824f2a02eea3c6757eda5a0f2d9` 完成初次安装、重启后健康检查和同配置重跑；随后仅将工具文件更新至 `ef5cb95e4522367a88387ec801a74ac6a144d1c7`，再次得到 `ALREADY_CONFIGURED`、`QR_CODE_DISPLAY: PASS`、运行文件校验值不变、Xray active 和 443 正常。用户确认 Shadowrocket 自动二维码导入及实际连通性正常。`PRIMARY_CLIENT_VALIDATION=Shadowrocket`；`PASSWALL_TEST=NOT_TESTED`，兼容性未实机验证，不属于 V1 发布阻塞。测试期间生产 DNS 记录保持原值，未访问生产 VPS 或修改 Cloudflare。
 
 1. 新开一台全新 Ubuntu 24.04 LTS LightNode VPS，记录 `NEW_VPS_IP`；在服务商防火墙允许 SSH 和 TCP 443。
 2. 获取固定待测 commit 的仓库文件并审阅；运行 `sudo ./bootstrap.sh --preflight`，记录脱敏输出。要求 `READY_TO_INSTALL: YES`，未知 443 owner 时停止。

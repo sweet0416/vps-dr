@@ -1,6 +1,6 @@
 # 安全边界
 
-- 只在用户控制的**新 VPS** 执行安装。当前生产 VPS `38.54.95.213`、Cloudflare 和现有域名配置不由脚本访问或修改。
+- 只在用户控制的**新 VPS** 执行安装。当前生产 VPS、Cloudflare 和现有域名配置不由脚本访问或修改。
 - UUID 保存在新 VPS 的 root-only state 与 Xray 配置中。终端导出的 VMess URI 含 UUID，不能贴到公开 issue、日志或 Git。`.env.example` 只有占位符。
 - Xray 发行版固定 tag，并核对仓库固定 SHA-256 与官方 `.dgst`。新版本必须重新审计并测试；不使用浮动 `latest` 或预发布版本。
 - systemd 运行前执行 Xray 配置测试。配置不一致、未知二进制或未知 443 进程会停止，不覆盖或结束它们。

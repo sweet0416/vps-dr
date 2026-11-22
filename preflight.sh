@@ -55,7 +55,7 @@ else
   if [[ "$existing" == YES ]]; then
     if ! python3 "$here/scripts/update.py" installed-binary-check "$STATE_DIR/state.json"; then block EXISTING_XRAY_CONFLICT; fi
   fi
-  if [[ "$config" == YES ]] && command -v python3 >/dev/null 2>&1 && ! python3 "$here/scripts/dr.py" config-check /usr/local/etc/xray/config.json "$(python3 "$here/scripts/dr.py" state-uuid "$STATE_DIR/state.json" 2>/dev/null || true)" >/dev/null 2>&1; then block CONFIG_CONFLICT; fi
+  if [[ "$config" == YES ]] && command -v python3 >/dev/null 2>&1 && ! python3 "$here/scripts/dr.py" config-check-state /usr/local/etc/xray/config.json "$STATE_DIR/state.json" >/dev/null 2>&1; then block CONFIG_CONFLICT; fi
   if [[ "$config" == YES && "$(stat -c '%a %u' /usr/local/etc/xray/config.json 2>/dev/null)" != '600 0' ]]; then block CONFIG_PERMISSIONS_UNSAFE; fi
   if [[ -e /etc/systemd/system/xray.service ]] && ! cmp -s "$here/config/xray.service" /etc/systemd/system/xray.service; then block EXISTING_XRAY_CONFLICT; fi
   if [[ ! -e /etc/systemd/system/xray.service ]] && command -v systemctl >/dev/null 2>&1 && systemctl cat xray.service >/dev/null 2>&1; then block EXISTING_XRAY_CONFLICT; fi
